@@ -34,7 +34,6 @@ bool updateUnderway = false;
 void handle_reset();
 void handle_reboot();
 void handle_status();
-void handle_settings();
 void handle_everything();
 void handle_setgdo();
 void handle_logout();
@@ -211,7 +210,6 @@ const std::unordered_multimap<std::string, std::pair<const HTTPMethod, void (*)(
     {"/reboot", {HTTP_POST, handle_reboot}},
     {"/setgdo", {HTTP_POST, handle_setgdo}},
     {"/logout", {HTTP_GET, handle_logout}},
-    {"/settings.html", {HTTP_GET, handle_settings}},
     {"/auth", {HTTP_GET, handle_auth}},
     {"/crashlog", {HTTP_GET, handle_crashlog}},
     {"/clearcrashlog", {HTTP_GET, handle_clearcrashlog}},
@@ -502,15 +500,6 @@ void handle_status()
     server.send(200, "application/json", json);
 
     return;
-}
-
-void handle_settings()
-{
-    if (passwordReq && !server.authenticateDigest(www_username, www_credentials))
-    {
-        return server.requestAuthentication(DIGEST_AUTH, www_realm);
-    }
-    return load_page("/settings.html");
 }
 
 void handle_logout()
