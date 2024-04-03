@@ -408,20 +408,6 @@ void handle_status()
         server.send(503, "text/plain", "503: Service Unavailable.");
         return;
     }
-
-    bool all = true;
-    // find query string and macro to test if arg is present
-    std::unordered_map<std::string, bool> argReq;
-    if (server.args() > 0)
-    {
-        all = false;
-        for (int i = 0; i < server.args(); i++)
-        {
-            argReq[server.argName(i).c_str()] = true;
-        }
-    }
-
-#define HAS_ARG(arg) argReq[arg]
 #define upTime millis()
 #define paired homekit_is_paired()
 #define accessoryID arduino_homekit_get_running_server()->accessory_id
@@ -435,65 +421,39 @@ void handle_status()
 
     // Build the JSON string
     START_JSON(json);
-    if (all || HAS_ARG("uptime"))
-        ADD_INT(json, "upTime", upTime);
-    if (all)
-        ADD_STR(json, "deviceName", device_name);
-    if (all || HAS_ARG("paired"))
-        ADD_BOOL(json, "paired", paired);
-    if (all)
-        ADD_STR(json, "firmwareVersion", std::string(AUTO_VERSION).c_str());
-    if (all)
-        ADD_STR(json, "accessoryID", accessoryID);
-    if (all)
-        ADD_STR(json, "localIP", IPaddr);
-    if (all)
-        ADD_STR(json, "subnetMask", subnetMask);
-    if (all)
-        ADD_STR(json, "gatewayIP", gatewayIP);
-    if (all)
-        ADD_STR(json, "macAddress", macAddress);
-    if (all)
-        ADD_STR(json, "wifiSSID", wifiSSID);
-    if (all)
-        ADD_STR(json, "wifiRSSI", (std::to_string(WiFi.RSSI()) + " dBm").c_str());
-    if (all)
-        ADD_STR(json, "GDOSecurityType", GDOSecurityType);
-    if (all || HAS_ARG("doorstate"))
-        ADD_STR(json, "garageDoorState", DOOR_STATE(garage_door.current_state));
-    if (all || HAS_ARG("lockstate"))
-        ADD_STR(json, "garageLockState", LOCK_STATE(garage_door.current_lock));
-    if (all || HAS_ARG("lighton"))
-        ADD_BOOL(json, "garageLightOn", garage_door.light);
-    if (all || HAS_ARG("motion"))
-        ADD_BOOL(json, "garageMotion", garage_door.motion);
-    if (all || HAS_ARG("obstruction"))
-        ADD_BOOL(json, "garageObstructed", garage_door.obstructed);
-    if (all)
-        ADD_BOOL(json, "passwordRequired", passwordReq);
-    if (all)
-        ADD_INT(json, "rebootSeconds", rebootSeconds);
+    ADD_INT(json, "upTime", upTime);
+    ADD_STR(json, "deviceName", device_name);
+    ADD_BOOL(json, "paired", paired);
+    ADD_STR(json, "firmwareVersion", std::string(AUTO_VERSION).c_str());
+    ADD_STR(json, "accessoryID", accessoryID);
+    ADD_STR(json, "localIP", IPaddr);
+    ADD_STR(json, "subnetMask", subnetMask);
+    ADD_STR(json, "gatewayIP", gatewayIP);
+    ADD_STR(json, "macAddress", macAddress);
+    ADD_STR(json, "wifiSSID", wifiSSID);
+    ADD_STR(json, "wifiRSSI", (std::to_string(WiFi.RSSI()) + " dBm").c_str());
+    ADD_STR(json, "GDOSecurityType", GDOSecurityType);
+    ADD_STR(json, "garageDoorState", DOOR_STATE(garage_door.current_state));
+    ADD_STR(json, "garageLockState", LOCK_STATE(garage_door.current_lock));
+    ADD_BOOL(json, "garageLightOn", garage_door.light);
+    ADD_BOOL(json, "garageMotion", garage_door.motion);
+    ADD_BOOL(json, "garageObstructed", garage_door.obstructed);
+    ADD_BOOL(json, "passwordRequired", passwordReq);
+    ADD_INT(json, "rebootSeconds", rebootSeconds);
     uint32_t free_heap = system_get_free_heap_size();
     if (free_heap < min_heap)
         min_heap = free_heap;
-    if (all)
-        ADD_INT(json, "freeHeap", free_heap);
-    if (all)
-        ADD_INT(json, "minHeap", min_heap);
-    if (all)
-        ADD_INT(json, "minStack", ESP.getFreeContStack());
-    if (all)
-        ADD_INT(json, "crashCount", crashCount);
-    if (all)
-        ADD_INT(json, "wifiPhyMode", wifiPhyMode);
-    if (all)
-        ADD_INT(json, "TTCseconds", TTCdelay);
+    ADD_INT(json, "freeHeap", free_heap);
+    ADD_INT(json, "minHeap", min_heap);
+    ADD_INT(json, "minStack", ESP.getFreeContStack());
+    ADD_INT(json, "crashCount", crashCount);
+    ADD_INT(json, "wifiPhyMode", wifiPhyMode);
+    ADD_INT(json, "TTCseconds", TTCdelay);
 
     END_JSON(json);
     // Only log if all requested (no arguments).
     // Avoids spaming console log if repeated requests for one value.
-    if (all)
-        RINFO("Status requested:\n%s", json);
+    RINFO("Status requested:\n%s", json);
     last_reported_garage_door = garage_door;
 
     server.sendHeader("Cache-Control", "no-cache, no-store");
