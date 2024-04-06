@@ -129,7 +129,7 @@ void improv_loop() {
         // Not sure if setPhyMode() works immediately or if reboot required???
         if (!connected) {
             wifiPhyMode = (WiFiPhyMode_t)0;
-            RINFO("Reset WiFiPhyMode to: %d", wifiPhyMode)
+            RINFO("Reset WiFiPhyMode to: %d", wifiPhyMode);
             write_int_to_file(wifiPhyModeFile, (uint32_t *)&wifiPhyMode);
             WiFi.setPhyMode(wifiPhyMode);
             wifiPower = 20;
