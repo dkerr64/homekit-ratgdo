@@ -1,6 +1,8 @@
 
 #include <Arduino.h>
 #include "LittleFS.h"
+#include <NTPClient.h>
+#include <WiFiUdp.h>
 
 #include "ratgdo.h"
 #include "wifi.h"
@@ -23,10 +25,13 @@ struct obstruction_sensor_t {
     unsigned long last_high = 0;       // count time between high pulses from the obst ISR
 } obstruction_sensor;
 
-
 long unsigned int led_on_time = 0;     // Stores time when LED should turn back on
 
 extern bool updateUnderway;
+
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP);
+unsigned long lastRebootAt = 0;
 
 /********************************** MAIN LOOP CODE *****************************************/
 
@@ -44,6 +49,9 @@ void setup() {
     setup_homekit();
 
     setup_web();
+
+    timeClient.begin();
+    timeClient.setUpdateInterval(10 * 60);  // Update NTP clock every 10 minutes
 
     RINFO("RATGDO setup completed");
     RINFO("Starting RATGDO Homekit version %s", AUTO_VERSION);
@@ -160,8 +168,14 @@ void service_timer_loop() {
     // Service the Obstruction Timer
     obstruction_timer();
 
+    timeClient.update();
     unsigned long current_millis = millis();
-
+    if (lastRebootAt == 0 && timeClient.isTimeSet())
+    {
+        lastRebootAt = timeClient.getEpochTime() - (current_millis / 1000);
+        RINFO("Current time: %s (UTC)", timeClient.getFormattedTime());
+    }
+    
     // LED Timer
     if (digitalRead(LED_BUILTIN) && (current_millis > led_on_time)) {
         digitalWrite(LED_BUILTIN, LOW);

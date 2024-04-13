@@ -65,6 +65,12 @@ extern struct GarageDoor garage_door;
 // Local copy of door status
 GarageDoor last_reported_garage_door;
 bool last_reported_paired = false;
+
+const char last_door_update_file[] = "last_door_update";
+uint32_t lastDoorUpdateAt = 0;
+const char last_door_state_file[] = "last_door_state";
+uint32_t lastDoorState = 0;
+
 // Garage door security type
 extern uint8_t gdoSecurityType;
 
@@ -191,6 +197,15 @@ char *json; // Maximum length of JSON response
 void web_loop()
 {
     START_JSON(json);
+    if (garage_door.active && garage_door.current_state != lastDoorState && timeClient.isTimeSet())
+    {
+        RINFO("Current Door State changing from %d to %d",lastDoorState, garage_door.current_state );
+        lastDoorUpdateAt = timeClient.getEpochTime();
+        lastDoorState = garage_door.current_state;
+        ADD_INT(json, "lastDoorUpdateAt", lastDoorUpdateAt);
+        write_int_to_file(last_door_update_file, &lastDoorUpdateAt);
+        write_int_to_file(last_door_state_file, &lastDoorState);
+    }
     // Conditional macros, only add if value has changed
     ADD_BOOL_C(json, "paired", homekit_is_paired(), last_reported_paired);
     ADD_STR_C(json, "garageDoorState", DOOR_STATE(garage_door.current_state), garage_door.current_state, last_reported_garage_door.current_state);
@@ -255,6 +270,8 @@ void setup_web()
     wifiPhyMode = (WiFiPhyMode_t)read_int_from_file(wifiPhyModeFile);
     TTCdelay = read_int_from_file(TTCdelay_file);
     wifiPower = (uint16_t)read_int_from_file(wifiPowerFile, 20);
+    lastDoorUpdateAt = read_int_from_file(last_door_update_file, 0);
+    lastDoorState = read_int_from_file(last_door_state_file, 0);
 
     crashCount = saveCrash.count();
     if (crashCount == 255)
@@ -480,6 +497,10 @@ void handle_status()
     ADD_INT(json, "wifiPhyMode", wifiPhyMode);
     ADD_INT(json, "wifiPower", wifiPower);
     ADD_INT(json, "TTCseconds", TTCdelay);
+    if (lastRebootAt > 0)
+        ADD_INT(json, "lastRebootAt", lastRebootAt);
+    if (lastDoorUpdateAt > 0)
+        ADD_INT(json, "lastDoorUpdateAt", lastDoorUpdateAt);
     END_JSON(json);
 
     RINFO("Status requested. JSON length: %d", strlen(json));

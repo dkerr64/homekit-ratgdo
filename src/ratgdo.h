@@ -1,6 +1,7 @@
 #ifndef _RATGDO_H
 #define _RATGDO_H
 
+#include <NTPClient.h>
 #include "homekit_decl.h"
 
 #define DEVICE_NAME "homekit-ratgdo"
@@ -67,5 +68,7 @@ struct GarageDoor {
     LockTargetState target_lock;
 };
 
+extern NTPClient timeClient;
+extern unsigned long lastRebootAt;
 
 #endif // _RATGDO_H
