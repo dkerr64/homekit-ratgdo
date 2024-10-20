@@ -36,6 +36,9 @@ For each of the following steps, use the [online browser-based flash tool](https
 
 That's it!
 
+> [!IMPORTANT]
+> If you experience very slow or poor connection accessing the ratgdo device web page then try moving the device further away from the garage door opener.  Several users have reported that this can improve reliability of the connection. We do not know why this is the case but may suggest some RF interference between the door opener and the ratgdo device.
+
 ## Using ratgdo Webpage
 
 Before pairing to HomeKit / Apple Home you should open up the ratgdo webpage and configure basic settings.  Simply enter the local IP address of the ratgdo device to access the settings page to set a more appropriate device name and check that your door protocol is correct.
@@ -106,10 +109,6 @@ Motion can also be triggered by the obstruction sensor and by pressing the door,
 
 Changing this setting will cause a reboot only if changing from no motion sensor to any selection that triggers motion, or vis versa.
 
-### Receive Logs
-
-This option is not available on mobile devices. On a desktop browser all server firmware logs can be displayed in the javascript console log. On some browsers you may need to enable developer mode before you can open the javascript console.
-
 ### Syslog
 
 This setting allows you to send the ratgdo logs to a syslog server.  Enter the IP address of your syslog server.  Uses UDP port 514 and logs to the LOCAL0 Facility.
@@ -120,6 +119,9 @@ This setting allows you to send the ratgdo logs to a syslog server.  Enter the I
 ### Door Protocol
 
 Set the protocol for your model of garage door opener.  This defaults to Security+ 2.0 and you should only change this if necessary.  Note that the changing the door protocol also resets the door opener rolling codes and whether there is a motion sensor (this will be automatically detected after reset).
+
+> [!NOTE]
+> This firmware does not currently support _dry contact_ door openers.  If you have one of these and are able to assist the maintainers add support, please contact us or submit a Pull Request.
 
 ### WiFi Version
 
@@ -177,7 +179,9 @@ On changing the WiFi network SSID you will have to un-pair and re-pair the ratgd
 Over-the-Air (OTA) updates are supported, either directly from GitHub or by selecting a firmware binary file on your computer. Follow the steps below to update:
 
 * Navigate to your ratgdo's ip address where you will see the devices webpage, Click `Firmware Update`
-  > When you open Firmware Update the ratgdo device performs a flash memory CRC check. If this fails a warning message is shown. Please see the Flash CRC Errors section below before proceeding.
+
+> [!NOTE]
+> When you open Firmware Update the ratgdo device performs a flash memory CRC check. If this fails a warning message is shown. Please see the Flash CRC Errors section below before proceeding.
 
 [![ota](docs/ota/ota.png)](#ota)
 * Update from Github
@@ -202,9 +206,8 @@ If the OTA firmware update fails the following message will be displayed and you
 
 ## Flash CRC Errors
 
-When requesting a reboot or displaying the firmware update dialog, the integrity of the ratgdo device is checked by running a CRC check on the flash memory. A CRC error is a strong indicator of a problem in the ratgdo firmware and it is highly likely that the device will fail to reboot.
+When displaying the firmware update dialog, the integrity of the ratgdo device is checked by running a CRC check on the flash memory. A CRC error is a strong indicator of a problem in the ratgdo firmware and it is highly likely that the device will fail to reboot.
 
-[![rebootcrc](docs/webpage/rebootcrc.png)](#rebootcrc)
 [![updatecrc](docs/ota/updatecrc.png)](#updatecrc)
 
 If you encounter a flash CRC error then please [open an issue](https://github.com/ratgdo/homekit-ratgdo/issues) on GitHub so that developers can assist with debugging.  Recovering from a flash CRC error will require flashing new firmware using a USB cable, but it may be possible to capture valuable information using esptool to assist with debugging.
@@ -360,7 +363,7 @@ The footer of the webpage displays useful information that can help project cont
 
 In addition the last reboot date and time is reported (calculated by subtracting up-time from current time).
 
-The _lastDoorChange_ will show the date and time that the door was last opened or closed.  This is not saved across reboots, so it will show as unknown after a reboot.
+The _lastDoorChange_ will show the date and time that the door was last opened or closed.
 
 ### Show system logs
 
