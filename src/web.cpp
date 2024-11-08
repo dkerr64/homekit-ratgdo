@@ -1,34 +1,62 @@
-// Copyright 2023 Brandon Matthews <thenewwazoo@optimaltour.us>
-// Copyright (c) 2023-24 David Kerr, https://github.com/dkerr64
-// All rights reserved. GPLv3 License
+/****************************************************************************
+ * RATGDO HomeKit for ESP32
+ * https://ratcloud.llc
+ * https://github.com/PaulWieland/ratgdo
+ *
+ * Copyright (c) 2023-24 David A Kerr... https://github.com/dkerr64/
+ * All Rights Reserved.
+ * Licensed under terms of the GPL-3.0 License.
+ *
+ * Contributions acknowledged from
+ * Brandon Matthews... https://github.com/thenewwazoo
+ * Jonathan Stroud...  https://github.com/jgstroud
+ *
+ */
 
-// Browser cache control, time in seconds after which browser cache invalid
-// This is used for CSS, JS and IMAGE file types.  Set to 30 days !!
-#define CACHE_CONTROL (60 * 60 * 24 * 30)
-
+// C/C++ language includes
 #include <string>
+#include <format>
 #include <tuple>
 #include <unordered_map>
+#include <time.h>
 
+// ESP system includes
+#include <esp_system.h>
+#include <esp_http_server.h>
+#include <esp_log.h>
+#include <esp_timer.h>
+#include <esp_netif_types.h>
+#include <esp_wifi.h>
+#include <sys/socket.h>
+#include <hap.h>
+// Undocumented function to get HomeKit HAP server handle
+// extern "C" httpd_handle_t *hap_httpd_get_handle();
+// JSON functions come as part of esp-homekit-sdk
+#include "../components/esp-homekit-sdk/components/homekit/json_generator/upstream/json_generator.h"
+
+// RATGDO project includes
+#define PROGMEM // so it is no-op in webcontent.h
 #include "www/build/webcontent.h"
-
 #include "ratgdo.h"
+#include "config.h"
 #include "comms.h"
 #include "log.h"
 #include "web.h"
 #include "utilities.h"
 #include "wifi.h"
+#include "json.h"
+#include "MD5Builder.h"
+#include "led.h"
+
+// Logger tag
+static const char *TAG = "ratgdo-http";
+
+// Browser cache control, time in seconds after which browser cache invalid
+// This is used for CSS, JS and IMAGE file types.  Set to 30 days !!
+#define CACHE_CONTROL (60 * 60 * 24 * 30)
 
 #ifdef ENABLE_CRASH_LOG
 #include "EspSaveCrash.h"
-#endif
-#include <arduino_homekit_server.h>
-#include <ESP8266WebServer.h>
-#include <Ticker.h>
-#include <eboot_command.h>
-#include <MD5Builder.h>
-
-#ifdef ENABLE_CRASH_LOG
 #ifdef LOG_MSG_BUFFER
 EspSaveCrash saveCrash(1408, 1024, true, &crashCallback);
 #else
@@ -36,42 +64,38 @@ EspSaveCrash saveCrash(1408, 1024, true);
 #endif
 #endif
 
-// Declare web server on HTTP port 80.
-ESP8266WebServer server(80);
-
 // Forward declare the internal URI handling functions...
-void handle_reset();
-void handle_reboot();
-void handle_status();
-void handle_everything();
-void handle_setgdo();
-void handle_logout();
-void handle_auth();
-void handle_subscribe();
-void handle_showlog();
-void handle_showrebootlog();
-#ifdef ENABLE_CRASH_LOG
-void handle_crashlog();
-void handle_clearcrashlog();
-#endif
+esp_err_t handle_reset(httpd_req_t *req);
+esp_err_t handle_reboot(httpd_req_t *req);
+esp_err_t handle_status(httpd_req_t *req);
+// esp_err_t handle_settings(httpd_req_t *req);
+esp_err_t handle_everything(httpd_req_t *req);
+esp_err_t handle_setgdo(httpd_req_t *req);
+esp_err_t handle_logout(httpd_req_t *req);
+
+esp_err_t handle_auth(httpd_req_t *req);
+esp_err_t handle_subscribe(httpd_req_t *req);
+esp_err_t handle_showlog(httpd_req_t *req);
+esp_err_t handle_showrebootlog(httpd_req_t *req);
+esp_err_t handle_crashlog(httpd_req_t *req);
+esp_err_t handle_clearcrashlog(httpd_req_t *req);
 #ifdef CRASH_DEBUG
-void handle_forcecrash();
-void handle_crash_oom();
+esp_err_t handle_forcecrash(httpd_req_t *req);
+esp_err_t handle_crash_oom(httpd_req_t *req);
 void *crashptr;
 char *test_str = NULL;
 #endif
-void handle_checkflash();
-void handle_update();
-void handle_firmware_upload();
-void SSEHandler(uint8_t);
-void handle_notfound();
-void handle_accesspoint();
-void handle_setssid();
+esp_err_t handle_checkflash(httpd_req_t *req);
+esp_err_t handle_update(httpd_req_t *req);
+esp_err_t handle_firmware_upload(httpd_req_t *req);
+esp_err_t SSEHandler(httpd_req_t *req, uint8_t channel);
+esp_err_t handle_notfound(httpd_req_t *req);
+esp_err_t handle_accesspoint(httpd_req_t *req);
+esp_err_t handle_setssid(httpd_req_t *req);
 
 // Built in URI handlers
-const char restEvents[] PROGMEM = "/rest/events/";
-typedef std::unordered_map<std::string, std::pair<const HTTPMethod, void (*)()>> BuiltInUriMap;
-const BuiltInUriMap builtInUri = {
+const char restEvents[] = "/rest/events/";
+const std::unordered_map<std::string, std::pair<const httpd_method_t, esp_err_t (*)(httpd_req_t *)>> builtInUri = {
     {"/status.json", {HTTP_GET, handle_status}},
     {"/reset", {HTTP_POST, handle_reset}},
     {"/reboot", {HTTP_POST, handle_reboot}},
@@ -81,15 +105,15 @@ const BuiltInUriMap builtInUri = {
     {"/showlog", {HTTP_GET, handle_showlog}},
     {"/showrebootlog", {HTTP_GET, handle_showrebootlog}},
     {"/checkflash", {HTTP_GET, handle_checkflash}},
-#ifdef ENABLE_CRASH_LOG
     {"/crashlog", {HTTP_GET, handle_crashlog}},
     {"/clearcrashlog", {HTTP_GET, handle_clearcrashlog}},
-#endif
 #ifdef CRASH_DEBUG
     {"/forcecrash", {HTTP_POST, handle_forcecrash}},
     {"/crashoom", {HTTP_POST, handle_crash_oom}},
 #endif
     {"/rest/events/subscribe", {HTTP_GET, handle_subscribe}}};
+
+static httpd_handle_t httpServer = NULL;
 
 // Garage door status
 extern struct GarageDoor garage_door;
@@ -99,32 +123,28 @@ bool last_reported_paired = false;
 uint32_t lastDoorUpdateAt = 0;
 GarageDoorCurrentState lastDoorState = (GarageDoorCurrentState)0xff;
 
-// Track our memory usage
-extern "C" uint32_t free_heap;
-extern "C" uint32_t min_heap;
-
 // number of times the device has crashed
 int crashCount = 0;
 
 // Implement our own firmware update so can enforce MD5 check.
 // Based on ESP8266HTTPUpdateServer
-String _updaterError;
+std::string _updaterError;
 bool _authenticatedUpdate;
 char firmwareMD5[36] = "";
 size_t firmwareSize = 0;
 bool flashCRC = true;
 
 // Common HTTP responses
-const char response400missing[] PROGMEM = "400: Bad Request, missing argument\n";
-const char response400invalid[] PROGMEM = "400: Bad Request, invalid argument\n";
-const char response404[] PROGMEM = "404: Not Found\n";
-const char response503[] PROGMEM = "503: Service Unavailable.\n";
-const char response200[] PROGMEM = "HTTP/1.1 200 OK\nContent-Type: text/plain\nConnection: close\n\n";
+const char response400missing[] = "400: Bad Request, missing argument\n";
+const char response400invalid[] = "400: Bad Request, invalid argument\n";
+const char response404[] = "404: Not Found\n";
+const char response503[] = "503: Service Unavailable.\n";
+const char response200[] = "HTTP/1.1 200 OK\nContent-Type: text/plain\nConnection: close\n\n";
 
-const char *http_methods[] PROGMEM = {"HTTP_ANY", "HTTP_GET", "HTTP_HEAD", "HTTP_POST", "HTTP_PUT", "HTTP_PATCH", "HTTP_DELETE", "HTTP_OPTIONS"};
+const char *http_methods[] = {"HTTP_ANY", "HTTP_GET", "HTTP_HEAD", "HTTP_POST", "HTTP_PUT", "HTTP_PATCH", "HTTP_DELETE", "HTTP_OPTIONS"};
 
-const char softAPhttpPreamble[] PROGMEM = "HTTP/1.1 200 OK\nContent-Type: text/html\nCache-Control: no-cache, no-store\nConnection: close\n\n<!DOCTYPE html>";
-const char softAPstyle[] PROGMEM = R"(<style>
+const char softAPhttpPreamble[] = "HTTP/1.1 200 OK\nContent-Type: text/html\nCache-Control: no-cache, no-store\nConnection: close\n\n<!DOCTYPE html>";
+const char softAPstyle[] = R"(<style>
 .adv {
  display: none;
 }
@@ -136,7 +156,7 @@ th:nth-child(1n+4), td:nth-child(1n+4) {
  text-align: right;
 }
 </style>)";
-const char softAPscript[] PROGMEM = R"(<script>
+const char softAPscript[] = R"(<script>
 const warnTxt = 'Selecting SSID in advanced mode locks the device to a specific WiFi ' +
  'access point by its unique hardware BSSID. If that access point goes offline, or you replace ' +
  'it, then the device will NOT connect to WiFi.';
@@ -158,17 +178,17 @@ function confirmAdv() {
  }
 }
 </script>)";
-const char softAPtableHead[] PROGMEM = R"(
+const char softAPtableHead[] = R"(
 <p>Select from available networks, or manually enter SSID:</p>
 <form action='/setssid' method='post'>
 <table>
 <tr><td><input id='adv' name='advanced' type='checkbox' onclick='shAdv(this.checked)'></td><td colspan='2'>Advanced</td></tr>
 <tr><th></th><th>SSID</th><th>RSSI</th><th>Chan</th><th>Hardware BSSID</th></tr>)";
-const char softAPtableRow[] PROGMEM = R"(
+const char softAPtableRow[] = R"(
 <tr %s><td><input type='radio' name='net' value='%d' %s></td><td>%s</td><td>%ddBm</td><td>%d</td><td>&nbsp;&nbsp;%02x:%02x:%02x:%02x:%02x:%02x</td></tr>)";
-const char softAPtableLastRow[] PROGMEM = R"(
+const char softAPtableLastRow[] = R"(
 <tr><td><input type='radio' name='net' value='%d'></td><td colspan='2'><input type='text' name='userSSID' placeholder='SSID' value='%s'></td></tr>)";
-const char softAPtableFoot[] PROGMEM = R"(
+const char softAPtableFoot[] = R"(
 </table>
 <br><label for='pw'>Network password:&nbsp;</label>
 <input id='pw' name='pw' type='password' placeholder='password'>
@@ -185,74 +205,33 @@ const char softAPtableFoot[] PROGMEM = R"(
 #define SSE_MAX_CHANNELS 8
 struct SSESubscription
 {
-    IPAddress clientIP;
-    WiFiClient client;
-    Ticker heartbeatTimer;
+    uint32_t clientIP;
+    httpd_handle_t socketHD;
+    int socketFD;
+    TimerHandle_t heartbeatTimer;
     bool SSEconnected;
     int SSEfailCount;
-    String clientUUID;
+    std::string clientUUID;
     bool logViewer;
 };
 SSESubscription subscription[SSE_MAX_CHANNELS];
 // During firmware update note which subscribed client is updating
 SSESubscription *firmwareUpdateSub = NULL;
-
 uint8_t subscriptionCount = 0;
+
+struct userContext
+{
+    esp_ip4_addr_t ipv4; // uint32_t version of IP address
+    char ipAddrStr[16];  // Set to remote client IP addresss
+    char url[24];        // URI with the query string stripped off
+};
+#define CTX_USER(req) ((userContext *)req->user_ctx)
+#define CTX_CLIENT_IP(req) (CTX_USER(req)->ipv4.addr)
+#define CTX_CLIENT_IP_STR(req) (CTX_USER(req)->ipAddrStr)
+#define CTX_URL(req) (CTX_USER(req)->url)
 
 #define JSON_BUFFER_SIZE 1280
 char *json = NULL;
-
-#define START_JSON(s)     \
-    {                     \
-        s[0] = 0;         \
-        strcat(s, "{\n"); \
-    }
-#define END_JSON(s)           \
-    {                         \
-        s[strlen(s) - 2] = 0; \
-        strcat(s, "\n}");     \
-    }
-#define ADD_INT(s, k, v)                      \
-    {                                         \
-        strcat(s, "\"");                      \
-        strcat_P(s, PSTR(k));                 \
-        strcat(s, "\": ");                    \
-        strcat(s, std::to_string(v).c_str()); \
-        strcat(s, ",\n");                     \
-    }
-#define ADD_STR(s, k, v)      \
-    {                         \
-        strcat(s, "\"");      \
-        strcat_P(s, PSTR(k)); \
-        strcat(s, "\": \"");  \
-        strcat(s, (v));       \
-        strcat(s, "\",\n");   \
-    }
-#define ADD_BOOL(s, k, v)                  \
-    {                                      \
-        strcat(s, "\"");                   \
-        strcat_P(s, PSTR(k));              \
-        strcat(s, "\": ");                 \
-        strcat(s, (v) ? "true" : "false"); \
-        strcat(s, ",\n");                  \
-    }
-#define ADD_BOOL_C(s, k, v, ov) \
-    {                           \
-        if (v != ov)            \
-        {                       \
-            ov = v;             \
-            ADD_BOOL(s, k, v)   \
-        }                       \
-    }
-#define ADD_STR_C(s, k, v, nv, ov) \
-    {                              \
-        if (nv != ov)              \
-        {                          \
-            ov = nv;               \
-            ADD_STR(s, k, v)       \
-        }                          \
-    }
-#define REMOVE_NL(s) for (char *p = (char *)s; (p = strchr(p, '\n')) != NULL; *p = ' ')
 
 #define DOOR_STATE(s) (s == 0) ? "Open" : (s == 1) ? "Closed"  \
                                       : (s == 2)   ? "Opening" \
@@ -265,26 +244,24 @@ char *json = NULL;
 
 void web_loop()
 {
-    loop_id = LOOP_WEB;
     unsigned long upTime = millis();
     START_JSON(json);
     if (garage_door.active && garage_door.current_state != lastDoorState)
     {
-        RINFO("Current Door State changing from %d to %d", lastDoorState, garage_door.current_state);
-#ifdef NTP_CLIENT
+        ESP_LOGI(TAG, "Current Door State changing from %d to %d", lastDoorState, garage_door.current_state);
         if (enableNTP && clockSet)
         {
             if (lastDoorState == 0xff)
             {
                 // initialize with saved time.
                 // lastDoorUpdateAt is milliseconds relative to system reboot time.
-                lastDoorUpdateAt = (userConfig->doorUpdateAt != 0) ? ((userConfig->doorUpdateAt - time(NULL)) * 1000) + upTime : 0;
+                lastDoorUpdateAt = (userConfig->getDoorUpdateAt() != 0) ? ((userConfig->getDoorUpdateAt() - time(NULL)) * 1000) + upTime : 0;
             }
             else
             {
                 // first state change after a reboot, so really is a state change.
-                userConfig->doorUpdateAt = time(NULL);
-                write_config_to_file();
+                userConfig->set(cfg_doorUpdateAt, (int)time(NULL));
+                userConfig->save();
                 lastDoorUpdateAt = upTime;
             }
         }
@@ -292,16 +269,14 @@ void web_loop()
         {
             lastDoorUpdateAt = (lastDoorState == 0xff) ? 0 : upTime;
         }
-#else
-        lastDoorUpdateAt = (lastDoorState == 0xff) ? 0 : upTime;
-#endif
+        // if no NTP....  lastDoorUpdateAt = (lastDoorState == 0xff) ? 0 : upTime;
         lastDoorState = garage_door.current_state;
         // We send milliseconds relative to current time... ie updated X milliseconds ago
         // First time through, zero offset from upTime, which is when we last rebooted)
         ADD_INT(json, "lastDoorUpdateAt", (upTime - lastDoorUpdateAt));
     }
     // Conditional macros, only add if value has changed
-    ADD_BOOL_C(json, "paired", homekit_is_paired(), last_reported_paired);
+    // ADD_BOOL_C(json, "paired", homekit_is_paired(), last_reported_paired);
     ADD_STR_C(json, "garageDoorState", DOOR_STATE(garage_door.current_state), garage_door.current_state, last_reported_garage_door.current_state);
     ADD_STR_C(json, "garageLockState", LOCK_STATE(garage_door.current_lock), garage_door.current_lock, last_reported_garage_door.current_lock);
     ADD_BOOL_C(json, "garageLightOn", garage_door.light, last_reported_garage_door.light);
@@ -315,28 +290,25 @@ void web_loop()
         REMOVE_NL(json);
         SSEBroadcastState(json);
     }
-    if ((userConfig->rebootSeconds != 0) && ((unsigned long)userConfig->rebootSeconds < millis() / 1000))
+    /*
+    if ((CFG_GET_INT("rebootSeconds") != 0) && ((unsigned long)CFG_GET_INT("rebootSeconds") < millis() / 1000))
     {
         // Reboot the system if we have reached time...
-        RINFO("Rebooting system as %i seconds expired", userConfig->rebootSeconds);
+        ESP_LOGI(TAG,"Rebooting system as %i seconds expired", userConfig->rebootSeconds);
         server.stop();
         sync_and_restart();
         return;
     }
-    server.handleClient();
+    */
+    // server.handleClient();
 }
 
 void setup_web()
 {
-    RINFO("=== Starting HTTP web server ===");
-    IRAM_START
-    // IRAM heap is used only for allocating globals, to leave as much regular heap
-    // available during operations.  We need to carefully monitor useage so as not
-    // to exceed available IRAM.  We can adjust the LOG_BUFFER_SIZE (in log.h) if we
-    // need to make more space available for initialization.
+    ESP_LOGI(TAG, "=== Starting HTTP web server ===");
     json = (char *)malloc(JSON_BUFFER_SIZE);
-    RINFO("Allocated buffer for JSON, size: %d", JSON_BUFFER_SIZE);
-    last_reported_paired = homekit_is_paired();
+    ESP_LOGI(TAG, "Allocated buffer for JSON, size: %d", JSON_BUFFER_SIZE);
+    last_reported_paired = false; // TODO homekit_is_paired();
 
     if (motionTriggers.asInt == 0)
     {
@@ -344,25 +316,25 @@ void setup_web()
         if (garage_door.has_motion_sensor)
         {
             motionTriggers.bit.motion = 1;
-            userConfig->motionTriggers = motionTriggers.asInt;
-            write_config_to_file();
+            userConfig->set(cfg_motionTriggers, motionTriggers.asInt);
+            userConfig->save();
         }
     }
     else if (garage_door.has_motion_sensor != (bool)motionTriggers.bit.motion)
     {
         // sync up web page tracking of whether we have motion sensor or not.
-        RINFO("Motion trigger mismatch, reset to %d", (uint8_t)garage_door.has_motion_sensor);
+        ESP_LOGI(TAG, "Motion trigger mismatch, reset to %d", (uint8_t)garage_door.has_motion_sensor);
         motionTriggers.bit.motion = (uint8_t)garage_door.has_motion_sensor;
-        userConfig->motionTriggers = motionTriggers.asInt;
-        write_config_to_file();
+        userConfig->set(cfg_motionTriggers, motionTriggers.asInt);
+        userConfig->save();
     }
-    RINFO("Motion triggers, motion : %d, obstruction: %d, light key: %d, door key: %d, lock key: %d, asInt: %d",
-          motionTriggers.bit.motion,
-          motionTriggers.bit.obstruction,
-          motionTriggers.bit.lightKey,
-          motionTriggers.bit.doorKey,
-          motionTriggers.bit.lockKey,
-          motionTriggers.asInt);
+    ESP_LOGI(TAG, "Motion triggers, motion : %d, obstruction: %d, light key: %d, door key: %d, lock key: %d, asInt: %d",
+             motionTriggers.bit.motion,
+             motionTriggers.bit.obstruction,
+             motionTriggers.bit.lightKey,
+             motionTriggers.bit.doorKey,
+             motionTriggers.bit.lockKey,
+             motionTriggers.asInt);
     lastDoorUpdateAt = 0;
     lastDoorState = (GarageDoorCurrentState)0xff;
 
@@ -375,15 +347,39 @@ void setup_web()
     }
 #endif
 
-    RINFO("Registering URI handlers");
-    server.on("/update", HTTP_POST, handle_update, handle_firmware_upload);
-    server.onNotFound(handle_everything);
-    // here the list of headers to be recorded
-    const char *headerkeys[] = {"If-None-Match"};
-    size_t headerkeyssize = sizeof(headerkeys) / sizeof(char *);
-    // ask server to track these headers
-    server.collectHeaders(headerkeys, headerkeyssize);
-    server.begin();
+    ESP_LOGI(TAG, "Registering URI handlers");
+
+    httpd_config_t httpConfig = HTTPD_DEFAULT_CONFIG();
+    httpConfig.lru_purge_enable = true;
+    httpConfig.uri_match_fn = httpd_uri_match_wildcard;
+    httpConfig.stack_size = 8192;
+
+    ESP_LOGI(TAG, "Starting HTTP Server on port: %d", httpConfig.server_port);
+    if (httpd_start(&httpServer, &httpConfig) != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to start file server!");
+        return;
+    }
+
+    // Register URI handlers for URIs that have built-in handlers in this source file.
+    /* URI handler for getting uploaded files */
+    httpd_uri_t everything = {
+        .uri = "*", // Match all URIs
+        .method = (httpd_method_t)HTTP_ANY,
+        .handler = handle_everything,
+        .user_ctx = malloc(sizeof(userContext))};
+    httpd_register_uri_handler(httpServer, &everything);
+
+    /*
+        server.on("/update", HTTP_POST, handle_update, handle_firmware_upload);
+        server.onNotFound(handle_everything);
+        // here the list of headers to be recorded
+        const char *headerkeys[] = {"If-None-Match"};
+        size_t headerkeyssize = sizeof(headerkeys) / sizeof(char *);
+        // ask server to track these headers
+        server.collectHeaders(headerkeys, headerkeyssize);
+        server.begin();
+    */
     // initialize all the Server-Sent Events (SSE) slots.
     for (uint8_t i = 0; i < SSE_MAX_CHANNELS; i++)
     {
@@ -391,257 +387,269 @@ void setup_web()
         subscription[i].clientIP = INADDR_NONE;
         subscription[i].clientUUID.clear();
     }
-    IRAM_END("HTTP server started");
     return;
 }
 
-/********* handlers **********/
-void handle_notfound()
+uint32_t getRemoteIP(httpd_req_t *req)
 {
-    RINFO("Sending 404 Not Found for: %s with method: %s to client: %s", server.uri().c_str(), http_methods[server.method()], server.client().remoteIP().toString().c_str());
-    server.send_P(404, type_txt, response404);
+    int sockfd = httpd_req_to_sockfd(req);
+    struct sockaddr_in6 addr; // esp_http_server uses IPv6 addressing
+    socklen_t addr_size = sizeof(addr);
+    uint32_t *ipv4;
+
+    if (getpeername(sockfd, (struct sockaddr *)&addr, &addr_size) < 0)
+    {
+        ESP_LOGE(TAG, "Error getting client IP");
+        return (uint32_t)INADDR_NONE;
+    }
+    ipv4 = (uint32_t *)&addr.sin6_addr.un.u32_addr[3];
+    return *ipv4;
 }
 
-void handle_auth()
+esp_err_t getRemoteIPstr(httpd_req_t *req, char *ipstr, size_t size)
 {
+    uint32_t ipv4 = getRemoteIP(req);
+    inet_ntop(AF_INET, &ipv4, ipstr, size);
+    return ESP_OK;
+}
+
+esp_err_t handle_notfound(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Sending 404 Not Found for: %s with method: %s to client: %s", req->uri, http_methods[req->method], CTX_CLIENT_IP_STR(req));
+    httpd_resp_send_404(req);
+    return ESP_OK;
+}
+
+esp_err_t handle_auth(httpd_req_t *req)
+{
+    /*
     if (userConfig->wwwPWrequired && !server.authenticateDigest(userConfig->wwwUsername, userConfig->wwwCredentials))
     {
         return server.requestAuthentication(DIGEST_AUTH, www_realm);
     }
-    server.send_P(200, type_txt, PSTR("Authenticated"));
-    return;
+    */
+    const char *resp = "Authenticated";
+    httpd_resp_sendstr(req, resp);
+    return ESP_OK;
 }
 
-void handle_reset()
+esp_err_t handle_reset(httpd_req_t *req)
 {
+    /*
     if (userConfig->wwwPWrequired && !server.authenticateDigest(userConfig->wwwUsername, userConfig->wwwCredentials))
     {
         return server.requestAuthentication(DIGEST_AUTH, www_realm);
     }
-    RINFO("... reset requested");
-    homekit_storage_reset();
-    server.client().setNoDelay(true);
-    server.send_P(200, type_txt, PSTR("Device has been un-paired from HomeKit. Rebooting...\n"));
+    */
+    ESP_LOGI(TAG, "... reset requested");
+    const char *resp = "Device has been un-paired from HomeKit. Rebooting...\n";
+    hap_reset_homekit_data();
+    httpd_resp_sendstr(req, resp);
     // Allow time to process send() before terminating web server...
-    delay(500);
-    server.stop();
+    // delay(500);
+    // httpd_stop(httpServer);
+    // hap_reboot_accessory();
+    vTaskDelay(pdMS_TO_TICKS(500));
     sync_and_restart();
-    return;
+    return ESP_OK;
 }
 
-void handle_reboot()
+esp_err_t handle_reboot(httpd_req_t *req)
 {
-    RINFO("... reboot requested");
-    server.client().setNoDelay(true);
-    server.send_P(200, type_txt, PSTR("Rebooting...\n"));
+    ESP_LOGI(TAG, "... reboot requested");
+    const char *resp = "Rebooting...\n";
+    httpd_resp_sendstr(req, resp);
     // Allow time to process send() before terminating web server...
-    delay(500);
-    server.stop();
+    // delay(500);
+    // httpd_stop(httpServer);
+    // hap_reboot_accessory();
     sync_and_restart();
-    return;
+    return ESP_OK;
 }
 
-void handle_checkflash()
+esp_err_t handle_checkflash(httpd_req_t *req)
 {
-    flashCRC = ESP.checkFlashCRC();
-    RINFO("checkFlashCRC: %s", flashCRC ? "true" : "false");
-    server.client().setNoDelay(true);
-    server.send_P(200, type_txt, flashCRC ? "true\n" : "false\n");
-    return;
+    // flashCRC = ESP.checkFlashCRC();
+    ESP_LOGI(TAG, "checkFlashCRC: %s", flashCRC ? "true" : "false");
+    httpd_resp_sendstr(req, flashCRC ? "true\n" : "false\n");
+    return ESP_OK;
 }
 
-void load_page(const char *page)
+esp_err_t load_page(httpd_req_t *req, const char *page)
 {
     if (webcontent.count(page) == 0)
-        return handle_notfound();
+        return handle_notfound(req);
 
     const char *data = (char *)std::get<0>(webcontent.at(page));
     int length = std::get<1>(webcontent.at(page));
-    const char *typeP = std::get<2>(webcontent.at(page));
-    // need local copy as strcmp_P cannot take two PSTR()'s
-    char type[MAX_MIME_TYPE_LEN];
-    strncpy_P(type, typeP, MAX_MIME_TYPE_LEN);
-    // Following for browser cache control...
+    const char *type = std::get<2>(webcontent.at(page));
+    // char type[MAX_MIME_TYPE_LEN];
+    // strncpy(type, typeP, MAX_MIME_TYPE_LEN);
+    //  Following for browser cache control...
     const char *crc32 = std::get<3>(webcontent.at(page)).c_str();
     bool cache = false;
     char cacheHdr[24] = "no-cache, no-store";
     char matchHdr[8] = "";
     if ((CACHE_CONTROL > 0) &&
-        (!strcmp_P(type, type_css) || !strcmp_P(type, type_js) || strstr_P(type, PSTR("image"))))
+        (!strcmp(type, type_css) || !strcmp(type, type_js) || strstr(type, ("image"))))
     {
         sprintf(cacheHdr, "max-age=%i", CACHE_CONTROL);
         cache = true;
     }
-    if (server.hasHeader(F("If-None-Match")))
-        strlcpy(matchHdr, server.header(F("If-None-Match")).c_str(), sizeof(matchHdr));
 
-    HTTPMethod method = server.method();
+    httpd_resp_set_type(req, type);
+    httpd_resp_set_hdr(req, "Cache-Control", cacheHdr);
+    if (cache)
+        httpd_resp_set_hdr(req, "ETag", crc32);
+
+    httpd_req_get_hdr_value_str(req, "If-None-Match", matchHdr, 8);
+
     if (strcmp(crc32, matchHdr))
     {
-#if defined(CHUNK_WEB_PAGES)
-        WiFiClient client = server.client();
-        client.print("HTTP/1.1 200 OK\n");
-        client.print("Content-Type: ");
-        client.print(type);
-        client.print("\n");
-        client.print("Content-Encoding: gzip\n");
-        client.print("Cache-Control: ");
-        client.print(cacheHdr);
-        client.print("\n");
-        if (cache)
+        httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+        if (req->method == HTTP_HEAD)
         {
-            client.print("ETag: ");
-            client.print(crc32);
-            client.print("\n");
-        }
-        client.print("Connection: close\n");
-        client.print("\n");
-        client.flush();
-#define CHUNK_SIZE 536
-        while (length > 0)
-        {
-            uint32_t sent;
-            uint32_t tx_size = min(CHUNK_SIZE, length);
-            sent = client.write_P(data, tx_size);
-            length -= sent;
-            data += sent;
-        }
-        client.stop();
-#else
-        server.sendHeader(F("Content-Encoding"), F("gzip"));
-        server.sendHeader(F("Cache-Control"), cacheHdr);
-        if (cache)
-            server.sendHeader(F("ETag"), crc32);
-        if (method == HTTP_HEAD)
-        {
-            RINFO("Client %s requesting: %s (HTTP_HEAD, type: %s)", server.client().remoteIP().toString().c_str(), page, type);
-            server.send_P(200, type, "", 0);
+            ESP_LOGI(TAG, "Client %s requesting: %s (HTTP_HEAD, type: %s)", CTX_CLIENT_IP_STR(req), page, type);
+            httpd_resp_send(req, NULL, 0);
         }
         else
         {
-            RINFO("Client %s requesting: %s (HTTP_GET, type: %s, length: %i)", server.client().remoteIP().toString().c_str(), page, type, length);
-            server.send_P(200, type, data, length);
+            ESP_LOGI(TAG, "Client %s requesting: %s (HTTP_GET, type: %s, length: %i)", CTX_CLIENT_IP_STR(req), page, type, length);
+            httpd_resp_send(req, (const char *)data, length);
         }
-#endif
     }
     else
     {
-        RINFO("Sending 304 not modified to client %s requesting: %s (method: %s, type: %s)", server.client().remoteIP().toString().c_str(), page, http_methods[method], type);
-        server.send_P(304, type, "", 0);
+        ESP_LOGI(TAG, "Sending 304 not modified to client %s requesting: %s (method: %s, type: %s)", CTX_CLIENT_IP_STR(req), page, http_methods[req->method], type);
+        httpd_resp_set_status(req, "304 Not Modified");
+        httpd_resp_send(req, NULL, 0);
     }
-    return;
+    return ESP_OK;
 }
 
-void handle_everything()
+esp_err_t handle_everything(httpd_req_t *req)
 {
-    HTTPMethod method = server.method();
-    String page = server.uri();
-    const char *uri = page.c_str();
+    CTX_CLIENT_IP(req) = getRemoteIP(req);
 
+    strncpy(CTX_URL(req), req->uri, sizeof(CTX_URL(req)));
+    if (char *p = strchr(CTX_URL(req), '?'))
+    {
+        *p = 0; // null terminate at the query string
+    }
+    const char *uri = CTX_URL(req); // truncated URI at the query string;
+    if (CTX_CLIENT_IP(req) == INADDR_NONE)
+    {
+        // Bad client IP address, don't continue.
+        ESP_LOGW(TAG, "Client with bad IP address requesting: %s (method: %s), sending 404 not found.", uri, http_methods[req->method]);
+        httpd_resp_send_404(req);
+        return ESP_OK;
+    }
+    getRemoteIPstr(req, CTX_CLIENT_IP_STR(req), sizeof(CTX_CLIENT_IP_STR(req)));
+
+    /*
     if ((WiFi.getMode() & WIFI_AP) == WIFI_AP)
     {
         // If we are in Soft Access Point mode
-        RINFO("WiFi Soft Access Point mode");
+        ESP_LOGI(TAG, "WiFi Soft Access Point mode");
         if (page == "/" || page == "/ap")
-            return handle_accesspoint();
-        else if (page == "/setssid" && method == HTTP_POST)
-            return handle_setssid();
-        else if (page == "/reboot" && method == HTTP_POST)
-            return handle_reboot();
-        else if (page == "/rescan" && method == HTTP_POST)
+            return handle_accesspoint(req);
+        else if (page == "/setssid" && req->method == HTTP_POST)
+            return handle_setssid(req);
+        else if (page == "/reboot" && req->method == HTTP_POST)
+            return handle_reboot(req);
+        else if (page == "/rescan" && req->method == HTTP_POST)
         {
             wifi_scan();
-            return handle_accesspoint();
+            return handle_accesspoint(req);
         }
         else
-            return handle_notfound();
+            return handle_notfound(req);
     }
+    */
 
     if (builtInUri.count(uri) > 0)
     {
         // requested page matches one of our built-in handlers
-        RINFO("Client %s requesting: %s (method: %s)", server.client().remoteIP().toString().c_str(), uri, http_methods[method]);
-        if (method == builtInUri.at(uri).first)
-            return builtInUri.at(uri).second();
+        ESP_LOGI(TAG, "Client %s requesting: %s (method: %s)", CTX_CLIENT_IP_STR(req), uri, http_methods[req->method]);
+        if (req->method == builtInUri.at(uri).first)
+            return builtInUri.at(uri).second(req);
         else
-            return handle_notfound();
+            return handle_notfound(req);
     }
-    else if ((method == HTTP_GET) && (!strncmp_P(uri, restEvents, strlen(restEvents))))
+    else if ((req->method == HTTP_GET) && (!strncmp(uri, restEvents, strlen(restEvents))))
     {
         // Request for "/rest/events/" with a channel number appended
         uri += strlen(restEvents);
         unsigned int channel = atoi(uri);
         if (channel < SSE_MAX_CHANNELS)
-            return SSEHandler(channel);
+            return SSEHandler(req, channel);
         else
-            return handle_notfound();
+            return handle_notfound(req);
     }
-    else if (method == HTTP_GET || method == HTTP_HEAD)
+    else if (req->method == HTTP_GET || req->method == HTTP_HEAD)
     {
         // HTTP_GET that does not match a built-in handler
-        if (page == "/")
-            return load_page("/index.html");
+        if (!strcmp(uri, "/"))
+            return load_page(req, "/index.html");
         else
-            return load_page(uri);
+            return load_page(req, uri);
     }
     // it is a HTTP_POST for unknown URI
-    return handle_notfound();
+    return handle_notfound(req);
 }
 
-void handle_status()
+esp_err_t handle_status(httpd_req_t *req)
 {
     unsigned long upTime = millis();
-#define paired homekit_is_paired()
-#define accessoryID arduino_homekit_get_running_server() ? arduino_homekit_get_running_server()->accessory_id : "Inactive"
-#define clientCount arduino_homekit_get_running_server() ? arduino_homekit_get_running_server()->nfds : 0
-#define IPaddr WiFi.localIP().toString().c_str()
-#define subnetMask WiFi.subnetMask().toString().c_str()
-#define gatewayIP WiFi.gatewayIP().toString().c_str()
-#define nameserverIP WiFi.dnsIP().toString().c_str()
-#define macAddress WiFi.macAddress().c_str()
-#define wifiSSID WiFi.SSID().c_str()
-#define GDOSecurityType std::to_string(gdoSecurityType).c_str()
+#define paired false
+#define accessoryID "Unknown"
+#define clientCount 0
     // Build the JSON string
     START_JSON(json);
     ADD_INT(json, "upTime", upTime);
-    ADD_STR(json, "deviceName", device_name);
-    ADD_STR(json, "userName", userConfig->wwwUsername);
+    ADD_STR(json, cfg_deviceName, userConfig->getDeviceName().c_str());
+    ADD_STR(json, "userName", userConfig->getwwwUsername().c_str());
     ADD_BOOL(json, "paired", paired);
     ADD_STR(json, "firmwareVersion", std::string(AUTO_VERSION).c_str());
     ADD_STR(json, "accessoryID", accessoryID);
     ADD_INT(json, "clients", clientCount);
-    ADD_STR(json, "localIP", IPaddr);
-    ADD_STR(json, "subnetMask", subnetMask);
-    ADD_STR(json, "gatewayIP", gatewayIP);
-    ADD_STR(json, "nameserverIP", nameserverIP);
+    ADD_STR(json, cfg_localIP, userConfig->getLocalIP().c_str());
+    ADD_STR(json, cfg_subnetMask, userConfig->getSubnetMask().c_str());
+    ADD_STR(json, cfg_gatewayIP, userConfig->getGatewayIP().c_str());
+    ADD_STR(json, cfg_nameserverIP, userConfig->getNameserverIP().c_str());
     ADD_STR(json, "macAddress", macAddress);
-    ADD_STR(json, "wifiSSID", wifiSSID);
-    ADD_STR(json, "wifiRSSI", (std::to_string(WiFi.RSSI()) + " dBm, Channel " + std::to_string(WiFi.channel())).c_str());
-    ADD_STR(json, "wifiBSSID", WiFi.BSSIDstr().c_str());
-    ADD_BOOL(json, "lockedAP", wifiConf.bssid_set)
-    ADD_INT(json, "GDOSecurityType", userConfig->gdoSecurityType);
+    wifi_ap_record_t apInfo;
+    if (ESP_OK == esp_wifi_sta_get_ap_info(&apInfo))
+    {
+        ADD_STR(json, "wifiSSID", (char *)apInfo.ssid);
+        ADD_STR(json, "wifiRSSI", (std::to_string(apInfo.rssi) + " dBm, Channel " + std::to_string(apInfo.primary)).c_str());
+        char bssid[18];
+        snprintf(bssid, sizeof(bssid), "%02x:%02x:%02x:%02x:%02x:%02x", apInfo.bssid[0], apInfo.bssid[1], apInfo.bssid[2], apInfo.bssid[3], apInfo.bssid[4], apInfo.bssid[5]);
+        ADD_STR(json, "wifiBSSID", bssid);
+    }
+    ADD_BOOL(json, "lockedAP", false);
+    ADD_INT(json, cfg_GDOSecurityType, userConfig->getGDOSecurityType());
     ADD_STR(json, "garageDoorState", garage_door.active ? DOOR_STATE(garage_door.current_state) : DOOR_STATE(255));
     ADD_STR(json, "garageLockState", LOCK_STATE(garage_door.current_lock));
     ADD_BOOL(json, "garageLightOn", garage_door.light);
     ADD_BOOL(json, "garageMotion", garage_door.motion);
     ADD_BOOL(json, "garageObstructed", garage_door.obstructed);
-    ADD_BOOL(json, "passwordRequired", userConfig->wwwPWrequired);
-    ADD_INT(json, "rebootSeconds", userConfig->rebootSeconds);
-    ADD_INT(json, "freeHeap", free_heap);
-    ADD_INT(json, "minHeap", min_heap);
-    ADD_INT(json, "minStack", ESP.getFreeContStack());
+    ADD_BOOL(json, cfg_passwordRequired, userConfig->getPasswordRequired());
+    ADD_INT(json, cfg_rebootSeconds, userConfig->getRebootSeconds());
+    ADD_INT(json, "freeHeap", esp_get_free_heap_size());
+    ADD_INT(json, "minHeap", esp_get_minimum_free_heap_size());
+    ADD_INT(json, "minStack", 0);
     ADD_INT(json, "crashCount", crashCount);
-    ADD_INT(json, "wifiPhyMode", userConfig->wifiPhyMode);
-    ADD_INT(json, "wifiPower", userConfig->wifiPower);
-    ADD_BOOL(json, "staticIP", userConfig->staticIP);
-    ADD_BOOL(json, "syslogEn", userConfig->syslogEn);
-    ADD_STR(json, "syslogIP", userConfig->syslogIP);
-    ADD_INT(json, "TTCseconds", userConfig->TTCdelay);
-    ADD_INT(json, "motionTriggers", motionTriggers.asInt);
-    ADD_INT(json, "LEDidle", (led.getIdleState() == LOW) ? 1 : 0);
+    ADD_INT(json, cfg_wifiPhyMode, userConfig->getWifiPhyMode());
+    ADD_INT(json, cfg_wifiPower, userConfig->getWifiPower());
+    ADD_BOOL(json, cfg_staticIP, userConfig->getStaticIP());
+    ADD_BOOL(json, cfg_syslogEn, userConfig->getSyslogEn());
+    ADD_STR(json, cfg_syslogIP, userConfig->getSyslogIP().c_str());
+    ADD_INT(json, cfg_TTCseconds, userConfig->getTTCseconds());
+    ADD_INT(json, cfg_motionTriggers, motionTriggers.asInt);
+    ADD_INT(json, cfg_LEDidle, led->getIdleState());
     // We send milliseconds relative to current time... ie updated X milliseconds ago
     ADD_INT(json, "lastDoorUpdateAt", (upTime - lastDoorUpdateAt));
-#ifdef NTP_CLIENT
     ADD_BOOL(json, "enableNTP", enableNTP);
     if (enableNTP)
     {
@@ -649,342 +657,281 @@ void handle_status()
         {
             ADD_INT(json, "serverTime", time(NULL));
         }
-        ADD_STR(json, "timeZone", userConfig->timeZone);
+        ADD_STR(json, cfg_timeZone, userConfig->getTimeZone().c_str());
     }
-#endif
     ADD_BOOL(json, "checkFlashCRC", flashCRC);
     END_JSON(json);
 
     // send JSON straight to serial port
-    Serial.printf("%s\n", json);
+    printf("%s\n", json);
+    ESP_LOGI(TAG, "JSON length: %d", strlen(json));
     last_reported_garage_door = garage_door;
 
-    server.sendHeader(F("Cache-Control"), F("no-cache, no-store"));
-    server.send_P(200, type_json, json);
-    RINFO("JSON length: %d", strlen(json));
-    return;
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json, strlen(json));
+    ESP_LOGI(TAG, "JSON length: %d", strlen(json));
+    return ESP_OK;
 }
 
-void handle_logout()
+esp_err_t handle_logout(httpd_req_t *req)
 {
-    RINFO("Handle logout");
+    ESP_LOGI(TAG, "Handle logout");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+    /*
     return server.requestAuthentication(DIGEST_AUTH, www_realm);
+    */
 }
 
-void handle_setgdo()
+esp_err_t httpd_load_multipart(httpd_req_t *req, char **buf)
 {
-    const char *key;
-    const char *value;
-    bool reboot = false;
-    bool error = false;
-
-    if (!((server.args() == 1) && (server.argName(0) == "timeZone")))
+    size_t len = httpd_req_get_hdr_value_len(req, "Content-Type") + 1;
+    char *hdr = (char *)malloc(len);
+    httpd_req_get_hdr_value_str(req, "Content-Type", hdr, len);
+    if (strstr(hdr, "multipart/form-data") == NULL)
     {
-        // We will allow setting of time zone without authentication
-        if (userConfig->wwwPWrequired && !server.authenticateDigest(userConfig->wwwUsername, userConfig->wwwCredentials))
+        free(hdr);
+        return ESP_FAIL;
+    }
+    free(hdr);                                   // release buffer allocated for content type
+    *buf = (char *)malloc(req->content_len + 1); // allocate for content, released in calling fn.
+    size_t off = 0;
+    while (off < req->content_len)
+    {
+        /* Read data received in the request */
+        int ret = httpd_req_recv(req, *buf + off, req->content_len - off);
+        if (ret <= 0)
         {
-            RINFO("In setGDO request authentication");
-            return server.requestAuthentication(DIGEST_AUTH, www_realm);
+            free(*buf);
+            return (ret == 0) ? ESP_FAIL : ret;
+        }
+        off += ret;
+    }
+    return ESP_OK;
+}
+
+char *getKeyValue(char *buf, char **key, char **value)
+{
+    char *p = strstr(buf, "Content-Disposition:");
+    if (p)
+    {
+        *key = strstr(p, "name=\"") + 6;    // find key at name="
+        *value = strstr(p, "\r\n\r\n") + 4; // find value at two newlines
+        *strstr(*key, "\"") = 0;            // terminate key string at closing quote
+        p = strstr(*value, "\r\n");         // move pointer to end of value
+        *p++ = 0;                           // terminate value string at newline, move pointer
+    }
+    return p; // pointer to point we got to in buffer
+}
+
+esp_err_t handleResetDoor(char *key, char *value)
+{
+    ESP_LOGI(TAG, "Request to reset door rolling codes");
+    reset_door();
+    return ESP_OK;
+}
+
+esp_err_t handleGarageLightOn(char *key, char *value)
+{
+    set_light(!strcmp(value, "1") ? true : false);
+    return ESP_OK;
+}
+
+esp_err_t handleGarageDoorState(char *key, char *value)
+{
+    if (!strcmp(value, "1"))
+        open_door();
+    else
+        close_door();
+    return ESP_OK;
+}
+
+esp_err_t handleGarageLockState(char *key, char *value)
+{
+    set_lock(!strcmp(value, "1") ? 1 : 0);
+    return ESP_OK;
+}
+
+esp_err_t handleCredentials(char *key, char *value)
+{
+    char *newUsername = strstr(value, "username");
+    char *newCredentials = strstr(value, "credentials");
+    if (!(newUsername && newCredentials))
+        return ESP_FAIL;
+
+    // JSON string passed in.
+    // Very basic parsing, not using library functions to save memory
+    // find the colon after the key string
+    newUsername = strchr(newUsername, ':') + 1;
+    newCredentials = strchr(newCredentials, ':') + 1;
+    // for strings find the double quote
+    newUsername = strchr(newUsername, '"') + 1;
+    newCredentials = strchr(newCredentials, '"') + 1;
+    // null terminate the strings (at closing quote).
+    *strchr(newUsername, '"') = (char)0;
+    *strchr(newCredentials, '"') = (char)0;
+    // save values...
+    ESP_LOGI(TAG, "Set user credentials: %s : %s", newUsername, newCredentials);
+    userConfig->set(cfg_wwwUsername, newUsername);
+    userConfig->set(cfg_wwwCredentials, newCredentials);
+    return ESP_OK;
+}
+
+esp_err_t handleUpdateUnderway(char *key, char *value)
+{
+    firmwareSize = 0;
+    firmwareUpdateSub = NULL;
+    char *md5 = strstr(value, "md5");
+    char *size = strstr(value, "size");
+    char *uuid = strstr(value, "uuid");
+
+    if (!(md5 && size && uuid))
+        return ESP_FAIL;
+
+    // JSON string of passed in.
+    // Very basic parsing, not using library functions to save memory
+    // find the colon after the key string
+    md5 = strchr(md5, ':') + 1;
+    size = strchr(size, ':') + 1;
+    uuid = strchr(uuid, ':') + 1;
+    // for strings find the double quote
+    md5 = strchr(md5, '"') + 1;
+    uuid = strchr(uuid, '"') + 1;
+    // null terminate the strings (at closing quote).
+    *strchr(md5, '"') = (char)0;
+    *strchr(uuid, '"') = (char)0;
+    // ESP_LOGI(TAG,"MD5: %s, UUID: %s, Size: %d", md5, uuid, atoi(size));
+    // save values...
+    strlcpy(firmwareMD5, md5, sizeof(firmwareMD5));
+    firmwareSize = atoi(size);
+    /* TODO
+    for (uint8_t channel = 0; channel < SSE_MAX_CHANNELS; channel++)
+    {
+        if (subscription[channel].SSEconnected && subscription[channel].clientUUID == uuid && subscription[channel].client.connected())
+        {
+            firmwareUpdateSub = &subscription[channel];
+            break;
         }
     }
-    // Loop over all the GDO settings passed in...
-    for (int i = 0; i < server.args(); i++)
+    */
+    return ESP_OK;
+}
+
+esp_err_t handle_setgdo(httpd_req_t *req)
+{
+    // Build-in handlers that do not set a configuration value, or set multiple values.
+    // key, {reboot, wifiChanged, value, fn to call}
+    static const std::unordered_map<std::string, configSetting> setGDOhandlers = {
+        {"resetDoor", {true, false, 0, handleResetDoor}},
+        {"garageLightOn", {false, false, 0, handleGarageLightOn}},
+        {"garageDoorState", {false, false, 0, handleGarageDoorState}},
+        {"garageLockState", {false, false, 0, handleGarageLockState}},
+        {"credentials", {false, false, 0, handleCredentials}}, // parse out wwwUsername and credentials
+        {"updateUnderway", {false, false, 0, handleUpdateUnderway}},
+    };
+
+    bool reboot = false;
+    bool error = false;
+    bool wifiChanged = false;
+    bool saveSettings = false;
+    char *ptr;
+    char *key;
+    char *value;
+    configSetting actions;
+    char *form; // malloc() in httpd_load_multipart, must free() here.
+
+    esp_err_t err = httpd_load_multipart(req, &form);
+    if (err)
     {
-        key = server.argName(i).c_str();
-        value = server.arg(i).c_str();
+        ESP_LOGI(TAG, "Sending %s, for: %s", response400invalid, CTX_URL(req));
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, response400invalid);
+    };
 
-        RINFO("Key: %s, Value: %s", key, value);
-        if (strlen(key) == 0 || strlen(value) == 0)
+    ptr = form;
+    while (!error && (ptr = getKeyValue(ptr, &key, &value)))
+    {
+        // TODO... add authentication for all except "timeZone"
+        if (setGDOhandlers.count(key))
         {
-            RINFO("Sending 400 bad request, missing argument, for: %s", server.uri().c_str());
-            server.send_P(400, type_txt, response400missing);
-            return;
-        }
-
-        // Check against each known setting
-        if (!strcmp(key, "garageLightOn"))
-        {
-            set_light(!strcmp(value, "1") ? true : false);
-        }
-        else if (!strcmp(key, "garageDoorState"))
-        {
-            if (!strcmp(value, "1"))
-                open_door();
-            else
-                close_door();
-        }
-        else if (!strcmp(key, "garageLockState"))
-        {
-            set_lock(!strcmp(value, "1") ? 1 : 0);
-        }
-        else if (!strcmp(key, "credentials"))
-        {
-            char *newUsername = strstr(value, "username");
-            char *newCredentials = strstr(value, "credentials");
-            if (newUsername && newCredentials)
+            ESP_LOGI(TAG, "Call handler for Key: %s, Value: %s", key, value);
+            actions = setGDOhandlers.at(key);
+            if (actions.fn)
             {
-                // JSON string of passed in.
-                // Very basic parsing, not using library functions to save memory
-                // find the colon after the key string
-                newUsername = strchr(newUsername, ':') + 1;
-                newCredentials = strchr(newCredentials, ':') + 1;
-                // for strings find the double quote
-                newUsername = strchr(newUsername, '"') + 1;
-                newCredentials = strchr(newCredentials, '"') + 1;
-                // null terminate the strings (at closing quote).
-                *strchr(newUsername, '"') = (char)0;
-                *strchr(newCredentials, '"') = (char)0;
-                // save values...
-                strlcpy(userConfig->wwwUsername, newUsername, sizeof(userConfig->wwwUsername));
-                strlcpy(userConfig->wwwCredentials, newCredentials, sizeof(userConfig->wwwCredentials));
+                error = error || (actions.fn(key, value) != ESP_OK);
+                reboot = reboot || actions.reboot;
+                wifiChanged = wifiChanged || actions.wifiChanged;
+            }
+        }
+        else if (userConfig->set(key, value))
+        {
+            ESP_LOGI(TAG, "Set configuration for Key: %s, Value: %s", key, value);
+            actions = userConfig->getDetail(key);
+            if (actions.fn)
+            {
+                error = error || (actions.fn(key, value) != ESP_OK);
+                // TODO, set these in handler function called in line above
+                reboot = reboot || actions.reboot;
+                wifiChanged = wifiChanged || actions.wifiChanged;
             }
             else
             {
-                // old implementation... before JSON form of parameter.
-                strlcpy(userConfig->wwwCredentials, value, sizeof(userConfig->wwwCredentials));
+                reboot = reboot || actions.reboot;
+                wifiChanged = wifiChanged || actions.wifiChanged;
             }
-        }
-        else if (!strcmp(key, "GDOSecurityType"))
-        {
-            int type = atoi(value);
-            if ((type == 1) || (type == 2))
-            {
-                RINFO("SetGDO security type to %i", type);
-                // reset the door opener ID, rolling code and presence of motion sensor.
-                reset_door();
-                userConfig->gdoSecurityType = type;
-                reboot = true;
-            }
-            else
-            {
-                error = true;
-            }
-        }
-        else if (!strcmp(key, "resetDoor"))
-        {
-            RINFO("Request to reset door rolling codes");
-            // reset the door opener ID, rolling code and presence of motion sensor.
-            reset_door();
-            reboot = true;
-        }
-        else if (!strcmp(key, "softAPmode"))
-        {
-            RINFO("Request to boot into soft access point mode");
-            userConfig->softAPmode = true;
-            reboot = true;
-        }
-        else if (!strcmp(key, "passwordRequired"))
-        {
-            userConfig->wwwPWrequired = atoi(value) != 0;
-        }
-        else if (!strcmp(key, "rebootSeconds"))
-        {
-            userConfig->rebootSeconds = atoi(value);
-            reboot = (userConfig->rebootSeconds != 0);
-        }
-        else if (!strcmp(key, "deviceName"))
-        {
-            if (strlen(value) > 0)
-            {
-                strlcpy(device_name, value, sizeof(device_name));
-                strlcpy(userConfig->deviceName, value, sizeof(userConfig->deviceName));
-            }
-        }
-        else if (!strcmp(key, "wifiPhyMode"))
-        {
-            int wifiPhyMode = atoi(value);
-            if (userConfig->wifiPhyMode != wifiPhyMode)
-            {
-                // Setting has changed.  Write new value and note that change has taken place
-                userConfig->wifiPhyMode = wifiPhyMode;
-                userConfig->wifiSettingsChanged = true;
-                reboot = true;
-            }
-        }
-        else if (!strcmp(key, "wifiPower"))
-        {
-            int wifiPower = atoi(value);
-            if (userConfig->wifiPower != wifiPower)
-            {
-                // Setting has changed.  Write new value and note that change has taken place
-                userConfig->wifiPower = wifiPower;
-                userConfig->wifiSettingsChanged = true;
-                reboot = true;
-            }
-        }
-        else if (!strcmp(key, "staticIP"))
-        {
-            userConfig->staticIP = atoi(value) != 0;
-            userConfig->wifiSettingsChanged = true;
-            reboot = true;
-        }
-        else if (!strcmp(key, "subnetMask"))
-        {
-            if (strlen(value) > 0)
-            {
-                strlcpy(userConfig->IPnetmask, value, sizeof(userConfig->IPnetmask));
-
-                userConfig->wifiSettingsChanged = true;
-                reboot = true;
-            }
-        }
-        else if (!strcmp(key, "gatewayIP"))
-        {
-            if (strlen(value) > 0)
-            {
-                strlcpy(userConfig->IPgateway, value, sizeof(userConfig->IPgateway));
-
-                userConfig->wifiSettingsChanged = true;
-                reboot = true;
-            }
-        }
-        else if (!strcmp(key, "nameserverIP"))
-        {
-            if (strlen(value) > 0)
-            {
-                strlcpy(userConfig->IPnameserver, value, sizeof(userConfig->IPnameserver));
-
-                userConfig->wifiSettingsChanged = true;
-                reboot = true;
-            }
-        }
-        else if (!strcmp(key, "localIP"))
-        {
-            if (strlen(value) > 0)
-            {
-                strlcpy(userConfig->IPaddress, value, sizeof(userConfig->IPaddress));
-                userConfig->wifiSettingsChanged = true;
-                reboot = true;
-            }
-        }
-        else if (!strcmp(key, "syslogEn"))
-        {
-            RINFO("Setting SyslogEN to %s", value);
-            syslogEn = atoi(value) != 0;
-            userConfig->syslogEn = syslogEn;
-        }
-        else if (!strcmp(key, "syslogIP"))
-        {
-            if (strlen(value) > 0)
-            {
-                RINFO("Setting SyslogIP to %s", value);
-                strlcpy(userConfig->syslogIP, value, sizeof(userConfig->syslogIP));
-            }
-        }
-        else if (!strcmp(key, "TTCseconds"))
-        {
-            userConfig->TTCdelay = atoi(value);
-        }
-        else if (!strcmp(key, "motionTriggers"))
-        {
-            uint8_t triggers = (uint8_t)atoi(value);
-            // Only reboot if need for motion sensor accessory changes...
-            reboot = (((triggers == 0) && (motionTriggers.asInt != 0)) || ((triggers != 0) && (motionTriggers.asInt == 0)));
-            motionTriggers.asInt = triggers;
-            userConfig->motionTriggers = motionTriggers.asInt;
-        }
-        else if (!strcmp(key, "LEDidle"))
-        {
-            bool idleStateOn = (atoi(value) != 0);
-            userConfig->ledIdleState = (idleStateOn) ? LOW : HIGH;
-            led.setIdleState((idleStateOn) ? LOW : HIGH);
-        }
-#ifdef NTP_CLIENT
-        else if (!strcmp(key, "enableNTP"))
-        {
-            userConfig->enableNTP = atoi(value) != 0;
-            reboot = true;
-        }
-        else if (!strcmp(key, "timeZone"))
-        {
-            strlcpy(userConfig->timeZone, value, sizeof(userConfig->timeZone));
-            // semicolon separates continent/city from POSIX time zone string
-            char *tz = strchr(userConfig->timeZone, ';');
-            if (tz)
-                configTime(tz + 1, NTP_SERVER);
-        }
-#endif
-        else if (!strcmp(key, "updateUnderway"))
-        {
-            firmwareSize = 0;
-            firmwareUpdateSub = NULL;
-            char *md5 = strstr(value, "md5");
-            char *size = strstr(value, "size");
-            char *uuid = strstr(value, "uuid");
-            if (md5 && size && uuid)
-            {
-                // JSON string of passed in.
-                // Very basic parsing, not using library functions to save memory
-                // find the colon after the key string
-                md5 = strchr(md5, ':') + 1;
-                size = strchr(size, ':') + 1;
-                uuid = strchr(uuid, ':') + 1;
-                // for strings find the double quote
-                md5 = strchr(md5, '"') + 1;
-                uuid = strchr(uuid, '"') + 1;
-                // null terminate the strings (at closing quote).
-                *strchr(md5, '"') = (char)0;
-                *strchr(uuid, '"') = (char)0;
-                // RINFO("MD5: %s, UUID: %s, Size: %d", md5, uuid, atoi(size));
-                // save values...
-                strlcpy(firmwareMD5, md5, sizeof(firmwareMD5));
-                firmwareSize = atoi(size);
-                for (uint8_t channel = 0; channel < SSE_MAX_CHANNELS; channel++)
-                {
-                    if (subscription[channel].SSEconnected && subscription[channel].clientUUID == uuid && subscription[channel].client.connected())
-                    {
-                        firmwareUpdateSub = &subscription[channel];
-                        break;
-                    }
-                }
-            }
-            else
-            {
-                // old implementation... before JSON form of parameter.
-                strlcpy(firmwareMD5, value, sizeof(firmwareMD5));
-            }
+            saveSettings = true;
         }
         else
         {
+            ESP_LOGW(TAG, "Invalid Key: %s, Value: %s (F)", key, value);
             error = true;
         }
     }
-    RINFO("SetGDO Complete");
+    free(form);
+
+    ESP_LOGI(TAG, "SetGDO Complete");
 
     if (error)
     {
         // Simple error handling...
-        RINFO("Sending %s, for: %s", response400invalid, server.uri().c_str());
-        server.send_P(400, type_txt, response400invalid);
-        return;
+        ESP_LOGI(TAG, "Sending %s, for: %s", response400invalid, CTX_URL(req));
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, response400invalid);
     }
 
-    write_config_to_file();
+    if (saveSettings)
+    {
+        userConfig->set(cfg_wifiSettingsChanged, wifiChanged);
+        userConfig->save();
+    }
     if (reboot)
     {
+        httpd_resp_set_type(req, type_html);
+        httpd_resp_sendstr(req, "<p>Success. Reboot.</p>");
         // Some settings require reboot to take effect
-        server.send_P(200, type_html, PSTR("<p>Success. Reboot.</p>"));
-        RINFO("SetGDO Restart required");
+        ESP_LOGI(TAG, "SetGDO Restart required");
         // Allow time to process send() before terminating web server...
-        delay(500);
-        server.stop();
+        // delay(500);
+        vTaskDelay(pdMS_TO_TICKS(500));
         sync_and_restart();
     }
     else
     {
-        server.send_P(200, type_html, PSTR("<p>Success.</p>"));
+        httpd_resp_set_type(req, type_html);
+        httpd_resp_sendstr(req, "<p>Success.</p>");
     }
-    return;
+    return ESP_OK;
 }
 
 void SSEheartbeat(SSESubscription *s)
 {
-    // Serial.printf("Heartbeat\n");
     if (!s)
         return;
 
     if (!(s->clientIP))
         return;
+
+    char clientIPstr[16];
+    inet_ntop(AF_INET, &(s->clientIP), clientIPstr, sizeof(clientIPstr));
 
     if (!(s->SSEconnected))
     {
@@ -993,148 +940,198 @@ void SSEheartbeat(SSESubscription *s)
             // 5 heartbeats have failed... assume client will not connect
             // and free up the slot
             subscriptionCount--;
-            RINFO("Client %s timeout waiting to listen, remove SSE subscription.  Total subscribed: %d", s->clientIP.toString().c_str(), subscriptionCount);
-            s->heartbeatTimer.detach();
+            xTimerDelete(s->heartbeatTimer, 100);
             s->clientIP = INADDR_NONE;
             s->clientUUID.clear();
+            s->SSEconnected = false;
+            ESP_LOGI(TAG, "Client %s timeout waiting to listen, remove SSE subscription.  Total subscribed: %d", clientIPstr, subscriptionCount);
             // no need to stop client socket because it is not live yet.
         }
         else
         {
-            RINFO("Client %s not yet listening for SSE", s->clientIP.toString().c_str());
+            ESP_LOGI(TAG, "Client %s not yet listening for SSE", clientIPstr);
         }
         return;
     }
 
-    if (s->client.connected())
+    // if (s->client.connected())
+    if (s->clientIP && (s->clientIP != INADDR_NONE))
     {
         static int8_t lastRSSI = 0;
-        static int lastClientCount = 0;
+        // static int lastClientCount = 0;
+        static std::string sse_resp;
 
         START_JSON(json);
         ADD_INT(json, "upTime", millis());
-        ADD_INT(json, "freeHeap", free_heap);
-        ADD_INT(json, "minHeap", min_heap);
-        ADD_INT(json, "minStack", ESP.getFreeContStack());
+        ADD_INT(json, "freeHeap", esp_get_free_heap_size());
+        ADD_INT(json, "minHeap", esp_get_minimum_free_heap_size());
+        ADD_INT(json, "minStack", uxTaskGetStackHighWaterMark(NULL));
         ADD_BOOL(json, "checkFlashCRC", flashCRC);
-        if (lastRSSI != WiFi.RSSI())
+
+        wifi_ap_record_t apInfo;
+        if (ESP_OK == esp_wifi_sta_get_ap_info(&apInfo))
         {
-            lastRSSI = WiFi.RSSI();
-            ADD_STR(json, "wifiRSSI", (std::to_string(lastRSSI) + " dBm, Channel " + std::to_string(WiFi.channel())).c_str());
+            if (lastRSSI != apInfo.rssi)
+            {
+                lastRSSI = apInfo.rssi;
+                ADD_STR(json, "wifiRSSI", (std::to_string(apInfo.rssi) + " dBm, Channel " + std::to_string(apInfo.primary)).c_str());
+            }
         }
+        /*
         if (arduino_homekit_get_running_server() && arduino_homekit_get_running_server()->nfds != lastClientCount)
         {
             lastClientCount = arduino_homekit_get_running_server()->nfds;
             ADD_INT(json, "clients", lastClientCount);
         }
+        */
         END_JSON(json);
         REMOVE_NL(json);
-        s->client.printf("event: message\nretry: 15000\ndata: %s\n\n", json);
+        int i = strlen(json);
+        json[i++] = '\n'; // end the JSON string with two newlines
+        json[i++] = '\n';
+        json[i++] = '\0';
+        sse_resp = "event: message\nretry: 15000\ndata: ";
+        sse_resp += json;
+        if (httpd_socket_send(s->socketHD, s->socketFD, sse_resp.c_str(), sse_resp.length(), 0) < 0)
+        {
+            s->clientIP = INADDR_NONE;
+            s->clientUUID.clear();
+            ESP_LOGI(TAG, "SSE Heartbeat socket to client %s broken", clientIPstr);
+        }
     }
     else
     {
         subscriptionCount--;
-        RINFO("Client %s not listening, remove SSE subscription. Total subscribed: %d", s->clientIP.toString().c_str(), subscriptionCount);
-        s->heartbeatTimer.detach();
-        s->client.flush();
-        s->client.stop();
+        xTimerDelete(s->heartbeatTimer, 100);
         s->clientIP = INADDR_NONE;
         s->clientUUID.clear();
         s->SSEconnected = false;
+        ESP_LOGI(TAG, "Client %s not listening, remove SSE subscription. Total subscribed: %d", clientIPstr, subscriptionCount);
     }
 }
 
-void SSEHandler(uint8_t channel)
+void xTimerHeartbeat(TimerHandle_t xTimer)
 {
-    if (server.args() != 1)
+    return SSEheartbeat((SSESubscription *)pvTimerGetTimerID(xTimer));
+}
+
+std::unordered_map<std::string, std::string> parseQueryString(const std::string &query)
+{
+    std::unordered_map<std::string, std::string> result;
+    std::string key, value;
+    std::string::size_type pos = 0, nextPos;
+
+    while (pos < query.size())
     {
-        RINFO("Sending %s, for: %s", response400missing, server.uri().c_str());
-        server.send_P(400, type_txt, response400missing);
-        return;
+        nextPos = query.find('&', pos);
+        if (nextPos == std::string::npos)
+        {
+            nextPos = query.size();
+        }
+
+        std::string pair = query.substr(pos, nextPos - pos);
+        std::string::size_type eqPos = pair.find('=');
+
+        if (eqPos != std::string::npos)
+        {
+            key = pair.substr(0, eqPos);
+            value = pair.substr(eqPos + 1);
+        }
+        else
+        {
+            key = pair;
+            value = "";
+        }
+
+        result[key] = value;
+        pos = nextPos + 1;
     }
-    WiFiClient client = server.client();
+    return result;
+}
+
+esp_err_t SSEHandler(httpd_req_t *req, uint8_t channel)
+{
+    // httpd_resp_send(req, NULL, 0);
+    ESP_LOGI(TAG, "SSE handler for channel: %d", channel);
+    static char sse_resp[] = "HTTP/1.1 200 OK\nContent-Type: text/event-stream;\nConnection: keep-alive\nCache-Control: no-cache\nAccess-Control-Allow-Origin: *\n\n";
+    char *p = strchr(req->uri, '?');
+    if (!p)
+    {
+        ESP_LOGI(TAG, "Sending %s, for: %s", response400missing, CTX_URL(req));
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, response400missing);
+    }
+    // find the UUID and whether client wants to receive log messages
+    std::unordered_map<std::string, std::string> params = parseQueryString(++p);
+    ESP_LOGI(TAG, "SSE handler for UUID: %s", params.at("id").c_str());
     SSESubscription &s = subscription[channel];
-    if (s.clientUUID != server.arg(0))
+    if (s.clientUUID != params.at("id"))
     {
-        RINFO("Client %s with IP %s tries to listen for SSE but not subscribed", server.arg(0).c_str(), client.remoteIP().toString().c_str());
-        return handle_notfound();
+        ESP_LOGI(TAG, "Client %s with IP %s tries to listen for SSE but not subscribed", params.at("id").c_str(), CTX_CLIENT_IP_STR(req));
+        return handle_notfound(req);
     }
-    client.setNoDelay(true);
-    client.setSync(true);
-    s.client = client;                               // capture SSE server client connection
-    server.setContentLength(CONTENT_LENGTH_UNKNOWN); // the payload can go on forever
-    /*
-    server.sendHeader("Cache-Control", "no-cache, no-store");
-    server.sendHeader("Connection", "keep-alive");
-    server.sendHeader("Access-Control-Allow-Origin", "*");
-    */
-    server.sendContent_P(PSTR("HTTP/1.1 200 OK\nContent-Type: text/event-stream;\nConnection: keep-alive\nCache-Control: no-cache\nAccess-Control-Allow-Origin: *\n\n"));
+    s.socketHD = req->handle;
+    s.socketFD = httpd_req_to_sockfd(req);
+    httpd_socket_send(s.socketHD, s.socketFD, sse_resp, sizeof(sse_resp), 0);
     s.SSEconnected = true;
     s.SSEfailCount = 0;
-    s.heartbeatTimer.attach_scheduled(1.0, [channel, &s]
-                                      { SSEheartbeat(&s); });
-    RINFO("Client %s listening for SSE events on channel %d", client.remoteIP().toString().c_str(), channel);
+    ESP_LOGI(TAG, "Start heartbeat timer for: %s", CTX_URL(req));
+    s.heartbeatTimer = xTimerCreate(CTX_URL(req), pdMS_TO_TICKS(1000), pdTRUE, &s, xTimerHeartbeat);
+    xTimerStart(s.heartbeatTimer, 100);
+    // s.heartbeatTimer.attach_scheduled(1.0, [channel, &s] { SSEheartbeat(&s); });
+    ESP_LOGI(TAG, "Client %s listening for SSE events on channel %d", CTX_CLIENT_IP_STR(req), channel);
+    return ESP_OK;
 }
 
-void handle_subscribe()
+esp_err_t handle_subscribe(httpd_req_t *req)
 {
+    ESP_LOGI(TAG, "Handle subscribe");
     uint8_t channel;
-    IPAddress clientIP = server.client().remoteIP(); // get IP address of client
-    String SSEurl = "/rest/events/";
+    std::string SSEurl = restEvents;
 
     if (subscriptionCount == SSE_MAX_CHANNELS)
     {
-        RINFO("Client %s SSE Subscription declined, subscription count: %d", clientIP.toString().c_str(), subscriptionCount);
+        ESP_LOGI(TAG, "Client %s SSE Subscription declined, subscription count: %d", CTX_CLIENT_IP_STR(req), subscriptionCount);
         for (channel = 0; channel < SSE_MAX_CHANNELS; channel++)
         {
-            RINFO("Client %d: %s at %s", channel, subscription[channel].clientUUID.c_str(), subscription[channel].clientIP.toString().c_str());
+            ESP_LOGI(TAG, "Client %d: %s at %s", channel, subscription[channel].clientUUID.c_str(), "<TODO client IP>");
         }
-        return handle_notfound(); // We ran out of channels
+        return handle_notfound(req); // We ran out of channels
     }
 
-    if (clientIP == INADDR_NONE)
+    if (CTX_CLIENT_IP(req) == INADDR_NONE)
     {
-        RINFO("Sending %s, for: %s as clientIP missing", response400invalid, server.uri().c_str());
-        server.send_P(400, type_txt, response400invalid);
-        return;
+        ESP_LOGI(TAG, "Sending %s, for: %s as clientIP missing", response400invalid, CTX_URL(req));
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, response400invalid);
     }
 
-    // check we were passed at least one arguement
-    if (server.args() < 1)
+    // check we were passed at least one query arg
+    char *p = strchr(req->uri, '?');
+    if (!p)
     {
-        RINFO("Sending %s, for: %s", response400missing, server.uri().c_str());
-        server.send_P(400, type_txt, response400missing);
-        return;
+        ESP_LOGI(TAG, "Sending %s, for: %s", response400invalid, CTX_URL(req));
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, response400invalid);
     }
-
     // find the UUID and whether client wants to receive log messages
-    int id = 0;
-    bool logViewer = false;
-    for (int i = 0; i < server.args(); i++)
-    {
-        if (server.argName(i) == "id")
-            id = i;
-        else if (server.argName(i) == "log")
-            logViewer = true;
-    }
-
+    std::unordered_map<std::string, std::string> params = parseQueryString(++p);
+    bool logViewer = params.count("log") > 0;
     // check if we already have a subscription for this UUID
     for (channel = 0; channel < SSE_MAX_CHANNELS; channel++)
     {
-        if (subscription[channel].clientUUID == server.arg(id))
+        SSESubscription &s = subscription[channel];
+        if (s.clientUUID == params.at("id"))
         {
-            if (subscription[channel].SSEconnected)
+            if (s.SSEconnected)
             {
                 // Already connected.  We need to close it down as client will be reconnecting
-                RINFO("SSE Subscribe - client %s with IP %s already connected on channel %d, remove subscription", server.arg(id).c_str(), clientIP.toString().c_str(), channel);
-                subscription[channel].heartbeatTimer.detach();
-                subscription[channel].client.flush();
-                subscription[channel].client.stop();
+                ESP_LOGI(TAG, "SSE Subscribe - client %s with IP %s already connected on channel %d, remove subscription", params.at("id").c_str(), CTX_CLIENT_IP_STR(req), channel);
+                xTimerDelete(s.heartbeatTimer, 100);
+                s.socketHD = NULL;
+                s.socketFD = 0;
             }
             else
             {
                 // Subscribed but not connected yet, so nothing to close down.
-                RINFO("SSE Subscribe - client %s with IP %s already subscribed but not connected on channel %d", server.arg(id).c_str(), clientIP.toString().c_str(), channel);
+                ESP_LOGI(TAG, "SSE Subscribe - client %s with IP %s already subscribed but not connected on channel %d", params.at("id").c_str(), CTX_CLIENT_IP_STR(req), channel);
             }
             break;
         }
@@ -1145,72 +1142,87 @@ void handle_subscribe()
         // ended loop above without finding a match, so need to allocate a free slot
         ++subscriptionCount;
         for (channel = 0; channel < SSE_MAX_CHANNELS; channel++)
-            if (!subscription[channel].clientIP)
+            if (!subscription[channel].clientIP || subscription[channel].clientIP == INADDR_NONE)
                 break;
     }
-    subscription[channel] = {clientIP, server.client(), Ticker(), false, 0, server.arg(id), logViewer};
-    SSEurl += channel;
-    RINFO("SSE Subscription for client %s with IP %s: event bus location: %s, Total subscribed: %d", server.arg(id).c_str(), clientIP.toString().c_str(), SSEurl.c_str(), subscriptionCount);
-    server.sendHeader(F("Cache-Control"), F("no-cache, no-store"));
-    server.send_P(200, type_txt, SSEurl.c_str());
+
+    //  clientIP; socketHD; socketFD; heartbeatTimer; SSEconnected; SSEfailCount; clientUUID; logViewer;
+    subscription[channel] = {CTX_CLIENT_IP(req), req->handle, httpd_req_to_sockfd(req), NULL, false, 0, params.at("id"), logViewer};
+    SSEurl += std::to_string(channel);
+    ESP_LOGI(TAG, "SSE Subscription for client %s with IP %s: event bus location: %s, Total subscribed: %d", params.at("id").c_str(), CTX_CLIENT_IP_STR(req), SSEurl.c_str(), subscriptionCount);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store");
+    httpd_resp_set_type(req, type_txt);
+    httpd_resp_sendstr(req, SSEurl.c_str());
+    return ESP_OK;
 }
 
-#ifdef ENABLE_CRASH_LOG
-void handle_crashlog()
+esp_err_t handle_crashlog(httpd_req_t *req)
 {
-    RINFO("Request to display crash log...");
-    WiFiClient client = server.client();
-    client.print(response200);
-    saveCrash.print(client);
+    ESP_LOGI(TAG, "Request to display crash log...");
 #ifdef LOG_MSG_BUFFER
     if (crashCount > 0)
-        printSavedLog(client);
+    {
+        httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store");
+        httpd_resp_set_type(req, type_txt);
+        sendCrashLog(req);
+    }
+    else
+    {
+        httpd_resp_send(req, NULL, 0);
+    }
+#else
+    httpd_resp_send(req, NULL, 0);
 #endif
-    client.stop();
+    return ESP_OK;
 }
-#endif
 
-void handle_showlog()
+esp_err_t handle_showlog(httpd_req_t *req)
 {
-    WiFiClient client = server.client();
-    client.print(response200);
+    ESP_LOGI(TAG, "Handle showlog");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store");
+    httpd_resp_set_type(req, type_txt);
 #ifdef LOG_MSG_BUFFER
-    printMessageLog(client);
+    sendMessageLog(req);
+#else
+    httpd_resp_send(req, NULL, 0);
 #endif
-    client.stop();
+    return ESP_OK;
 }
 
-void handle_showrebootlog()
+esp_err_t handle_showrebootlog(httpd_req_t *req)
 {
-    WiFiClient client = server.client();
-    client.print(response200);
+    ESP_LOGI(TAG, "Handle showrebootlog");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store");
+    httpd_resp_set_type(req, type_txt);
 #ifdef LOG_MSG_BUFFER
-    File file = LittleFS.open(REBOOT_LOG_MSG_FILE, "r");
-    printSavedLog(file, client);
-    file.close();
+    sendRebootLog(req);
+#else
+    httpd_resp_send(req, NULL, 0);
 #endif
-    client.stop();
+    return ESP_OK;
 }
 
-#ifdef ENABLE_CRASH_LOG
-void handle_clearcrashlog()
+esp_err_t handle_clearcrashlog(httpd_req_t *req)
 {
+    ESP_LOGI(TAG, "Handle clearcrashlog");
+    /*
     if (userConfig->wwwPWrequired && !server.authenticateDigest(userConfig->wwwUsername, userConfig->wwwCredentials))
     {
         return server.requestAuthentication(DIGEST_AUTH, www_realm);
     }
-    RINFO("Clear saved crash log");
-    saveCrash.clear();
+    */
+    // saveCrash.clear();
     crashCount = 0;
-    server.send_P(200, type_txt, PSTR("Crash log cleared\n"));
+    httpd_resp_set_type(req, type_txt);
+    httpd_resp_sendstr(req, "Crash log cleared\n");
+    return ESP_OK;
 }
-#endif
 
 #ifdef CRASH_DEBUG
-void handle_crash_oom()
+esp_err_t handle_crash_oom(httpd_req_t *req)
 {
-    RINFO("Attempting to use up all memory");
-    server.send_P(200, type_txt, PSTR("Attempting to use up all memory\n"));
+    ESP_LOGI(TAG, "Attempting to use up all memory");
+    server.send(200, type_txt, ("Attempting to use up all memory\n"));
     delay(1000);
     for (int i = 0; i < 30; i++)
     {
@@ -1218,40 +1230,56 @@ void handle_crash_oom()
     }
 }
 
-void handle_forcecrash()
+esp_err_t handle_forcecrash(httpd_req_t *req)
 {
-    RINFO("Attempting to null ptr deref");
-    server.send_P(200, type_txt, PSTR("Attempting to null ptr deref\n"));
+    ESP_LOGI(TAG, "Attempting to null ptr deref");
+    server.send(200, type_txt, ("Attempting to null ptr deref\n"));
     delay(1000);
-    RINFO("Result: %s", test_str);
+    ESP_LOGI(TAG, "Result: %s", test_str);
 }
 #endif
 
 void SSEBroadcastState(const char *data, BroadcastType type)
 {
     // Flash LED to signal activity
-    led.flash(FLASH_MS);
+    // led.flash(FLASH_MS);
 
     // if nothing subscribed, then return
     if (subscriptionCount == 0)
         return;
 
+    static std::string sse_resp;
     for (uint8_t i = 0; i < SSE_MAX_CHANNELS; i++)
     {
-        if (subscription[i].SSEconnected && subscription[i].client.connected())
+        SSESubscription *s = &subscription[i];
+        if (s->SSEconnected && s->clientIP && (s->clientIP != INADDR_NONE))
         {
+            char clientIPstr[16];
+            inet_ntop(AF_INET, &(s->clientIP), clientIPstr, sizeof(clientIPstr));
             if (type == LOG_MESSAGE)
             {
-                if (subscription[i].logViewer)
+                if (s->logViewer)
                 {
-                    subscription[i].client.printf_P(PSTR("event: logger\ndata: %s\n\n"), data);
+                    // s->client.printf(("event: logger\ndata: %s\n\n"), data);
+                    sse_resp = std::format("event: logger\ndata: {}\n\n", data);
+                    if (httpd_socket_send(s->socketHD, s->socketFD, sse_resp.c_str(), sse_resp.length(), 0) < 0)
+                    {
+                        s->clientIP = INADDR_NONE;
+                        s->clientUUID.clear();
+                        ESP_LOGI(TAG, "SSE socket to client %s broken", clientIPstr);
+                    }
                 }
             }
             else if (type == RATGDO_STATUS)
             {
-                String IPaddrstr = IPAddress(subscription[i].clientIP).toString();
-                RINFO("SSE send to client %s on channel %d, data: %s", IPaddrstr.c_str(), i, data);
-                subscription[i].client.printf_P(PSTR("event: message\ndata: %s\n\n"), data);
+                ESP_LOGI(TAG, "SSE send to client %s on channel %d, data: %s", clientIPstr, i, data);
+                sse_resp = std::format("event: message\ndata: {}\n\n", data);
+                if (httpd_socket_send(s->socketHD, s->socketFD, sse_resp.c_str(), sse_resp.length(), 0) < 0)
+                {
+                    s->clientIP = INADDR_NONE;
+                    s->clientUUID.clear();
+                    ESP_LOGI(TAG, "SSE socket to client %s broken", clientIPstr);
+                }
             }
         }
     }
@@ -1261,14 +1289,18 @@ void SSEBroadcastState(const char *data, BroadcastType type)
 // Based on ESP8266HTTPUpdateServer
 void _setUpdaterError()
 {
+    /*
     StreamString str;
     Update.printError(str);
     _updaterError = str.c_str();
-    RINFO("Update error: %s", str.c_str());
+    ESP_LOGI(TAG, "Update error: %s", str.c_str());
+    */
 }
 
 bool check_flash_md5(uint32_t flashAddr, uint32_t size, const char *expectedMD5)
 {
+    return true;
+    /*
     MD5Builder md5 = MD5Builder();
     uint8_t buffer[128];
     uint32_t pos = 0;
@@ -1282,19 +1314,24 @@ bool check_flash_md5(uint32_t flashAddr, uint32_t size, const char *expectedMD5)
         pos += sizeof(buffer);
     }
     md5.calculate();
-    RINFO("Flash MD5: %s", md5.toString().c_str());
+    ESP_LOGI(TAG, "Flash MD5: %s", md5.toString().c_str());
     return (strcmp(md5.toString().c_str(), expectedMD5) == 0);
+    */
 }
 
-void handle_update()
+esp_err_t handle_update(httpd_req_t *req)
 {
+    ESP_LOGI(TAG, "Handle update");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+    /*
     bool verify = !strcmp(server.arg("action").c_str(), "verify");
 
     server.sendHeader(F("Access-Control-Allow-Headers"), "*");
     server.sendHeader(F("Access-Control-Allow-Origin"), "*");
     if (userConfig->wwwPWrequired && !server.authenticateDigest(userConfig->wwwUsername, userConfig->wwwCredentials))
     {
-        RINFO("In handle_update request authentication");
+        ESP_LOGI(TAG, "In handle_update request authentication");
         return server.requestAuthentication(DIGEST_AUTH, www_realm);
     }
 
@@ -1309,10 +1346,10 @@ void handle_update()
     }
     else
     {
-        RINFO("Received MD5: %s", Update.md5String().c_str());
+        ESP_LOGI(TAG, "Received MD5: %s", Update.md5String().c_str());
         struct eboot_command ebootCmd;
         eboot_command_read(&ebootCmd);
-        // RINFO("eboot_command: 0x%08X 0x%08X [0x%08X 0x%08X 0x%08X (%d)]", ebootCmd.magic, ebootCmd.action, ebootCmd.args[0], ebootCmd.args[1], ebootCmd.args[2], ebootCmd.args[2]);
+        // ESP_LOGI(TAG,"eboot_command: 0x%08X 0x%08X [0x%08X 0x%08X 0x%08X (%d)]", ebootCmd.magic, ebootCmd.action, ebootCmd.args[0], ebootCmd.args[1], ebootCmd.args[2], ebootCmd.args[2]);
         if (!check_flash_md5(ebootCmd.args[0], firmwareSize, firmwareMD5))
         {
             // MD5 of flash does not match expected MD5
@@ -1326,21 +1363,26 @@ void handle_update()
     if (server.args() > 0)
     {
         // Don't reboot, user/client must explicity request reboot.
-        server.send_P(200, type_txt, PSTR("Upload Success.\n"));
+        server.send(200, type_txt, ("Upload Success.\n"));
     }
     else
     {
         // Legacy... no query string args, so automatically reboot...
-        server.send_P(200, type_txt, PSTR("Upload Success. Rebooting...\n"));
+        server.send(200, type_txt, ("Upload Success. Rebooting...\n"));
         // Allow time to process send() before terminating web server...
         delay(500);
         server.stop();
         sync_and_restart();
     }
+    */
 }
 
-void handle_firmware_upload()
+esp_err_t handle_firmware_upload(httpd_req_t *req)
 {
+    ESP_LOGI(TAG, "Handle firmware upload");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+    /*
     // handler for the file upload, gets the sketch bytes, and writes
     // them through the Update object
     static size_t uploadProgress;
@@ -1357,10 +1399,10 @@ void handle_firmware_upload()
         _authenticatedUpdate = !userConfig->wwwPWrequired || server.authenticateDigest(userConfig->wwwUsername, userConfig->wwwCredentials);
         if (!_authenticatedUpdate)
         {
-            RINFO("Unauthenticated Update");
+            ESP_LOGI(TAG, "Unauthenticated Update");
             return;
         }
-        RINFO("Update: %s", upload.filename.c_str());
+        ESP_LOGI(TAG, "Update: %s", upload.filename.c_str());
         verify = !strcmp(server.arg("action").c_str(), "verify");
         size = atoi(server.arg("size").c_str());
         md5 = server.arg("md5").c_str();
@@ -1371,20 +1413,18 @@ void handle_firmware_upload()
             strlcpy(firmwareMD5, md5, sizeof(firmwareMD5));
 
         uint32_t maxSketchSpace = ESP.getFreeSketchSpace();
-        RINFO("Available space for upload: %lu", maxSketchSpace);
-        RINFO("Firmware size: %s", (firmwareSize > 0) ? std::to_string(firmwareSize).c_str() : "Unknown");
-        RINFO("Flash chip speed %d MHz", ESP.getFlashChipSpeed() / 1000000);
+        ESP_LOGI(TAG, "Available space for upload: %lu", maxSketchSpace);
+        ESP_LOGI(TAG, "Firmware size: %s", (firmwareSize > 0) ? std::to_string(firmwareSize).c_str() : "Unknown");
+        ESP_LOGI(TAG, "Flash chip speed %d MHz", ESP.getFlashChipSpeed() / 1000000);
         // struct eboot_command ebootCmd;
         // eboot_command_read(&ebootCmd);
-        // RINFO("eboot_command: 0x%08X 0x%08X [0x%08X 0x%08X 0x%08X (%d)]", ebootCmd.magic, ebootCmd.action, ebootCmd.args[0], ebootCmd.args[1], ebootCmd.args[2], ebootCmd.args[2]);
+        // ESP_LOGI(TAG,"eboot_command: 0x%08X 0x%08X [0x%08X 0x%08X 0x%08X (%d)]", ebootCmd.magic, ebootCmd.action, ebootCmd.args[0], ebootCmd.args[1], ebootCmd.args[2], ebootCmd.args[2]);
         if (!verify)
         {
             // Close HomeKit server so we don't have to handle HomeKit network traffic during update
             // Only if not verifying as either will have been shutdown on immediately prior upload, or we
             // just want to verify without disrupting operation of the HomeKit service.
             arduino_homekit_close();
-            IRAM_START
-            IRAM_END("HomeKit Server Closed");
         }
         if (!verify && !Update.begin((firmwareSize > 0) ? firmwareSize : maxSketchSpace, U_FLASH))
         {
@@ -1394,13 +1434,13 @@ void handle_firmware_upload()
         {
             // uncomment for testing...
             // char firmwareMD5[] = "675cbfa11d83a792293fdc3beb199cXX";
-            RINFO("Expected MD5: %s", firmwareMD5);
+            ESP_LOGI(TAG, "Expected MD5: %s", firmwareMD5);
             Update.setMD5(firmwareMD5);
             if (firmwareSize > 0)
             {
                 uploadProgress = 0;
                 nextPrintPercent = 10;
-                RINFO("%s progress: 00%%", verify ? "Verify" : "Update");
+                ESP_LOGI(TAG, "%s progress: 00%%", verify ? "Verify" : "Update");
             }
         }
     }
@@ -1415,7 +1455,7 @@ void handle_firmware_upload()
             if (uploadPercent >= nextPrintPercent)
             {
                 Serial.printf("\n"); // newline after the dot dot dots
-                RINFO("%s progress: %i%%", verify ? "Verify" : "Update", uploadPercent);
+                ESP_LOGI(TAG, "%s progress: %i%%", verify ? "Verify" : "Update", uploadPercent);
                 SSEheartbeat(firmwareUpdateSub); // keep SSE connection alive.
                 nextPrintPercent += 10;
                 // Report percentage to browser client if it is listening
@@ -1425,7 +1465,7 @@ void handle_firmware_upload()
                     ADD_INT(json, "uploadPercent", uploadPercent);
                     END_JSON(json);
                     REMOVE_NL(json);
-                    firmwareUpdateSub->client.printf_P(PSTR("event: uploadStatus\ndata: %s\n\n"), json);
+                    firmwareUpdateSub->client.printf(("event: uploadStatus\ndata: %s\n\n"), json);
                 }
             }
         }
@@ -1443,7 +1483,7 @@ void handle_firmware_upload()
         {
             if (Update.end(true))
             {
-                RINFO("Upload size: %zu", upload.totalSize);
+                ESP_LOGI(TAG, "Upload size: %zu", upload.totalSize);
             }
             else
             {
@@ -1455,22 +1495,27 @@ void handle_firmware_upload()
     {
         if (!verify)
             Update.end();
-        RINFO("%s was aborted", verify ? "Verify" : "Update");
+        ESP_LOGI(TAG, "%s was aborted", verify ? "Verify" : "Update");
     }
     esp_yield();
+    */
 }
 
-void handle_accesspoint()
+esp_err_t handle_accesspoint(httpd_req_t *req)
 {
+    ESP_LOGI(TAG, "Handle accesspoint");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+    /*
     bool connected = WiFi.isConnected();
-    String previousSSID = "";
+    std::string previousSSID = "";
     bool match = false;
     if (connected)
     {
         previousSSID = WiFi.SSID();
     }
-    RINFO("Number of WiFi networks: %d", wifiNets.size());
-    String currentSSID = "";
+    ESP_LOGI(TAG, "Number of WiFi networks: %d", wifiNets.size());
+    std::string currentSSID = "";
     WiFiClient client = server.client();
 
     client.print(softAPhttpPreamble);
@@ -1495,26 +1540,31 @@ void handle_accesspoint()
         {
             matchSSID = false;
         }
-        client.printf_P(softAPtableRow, (hide) ? "class='adv'" : "", i, (matchSSID) ? "checked='checked'" : "",
-                        net.ssid.c_str(), net.rssi, net.channel,
-                        net.bssid[0], net.bssid[1], net.bssid[2], net.bssid[3], net.bssid[4], net.bssid[5]);
+        client.printf(softAPtableRow, (hide) ? "class='adv'" : "", i, (matchSSID) ? "checked='checked'" : "",
+                      net.ssid.c_str(), net.rssi, net.channel,
+                      net.bssid[0], net.bssid[1], net.bssid[2], net.bssid[3], net.bssid[4], net.bssid[5]);
         i++;
     }
     // user entered value
-    client.printf_P(softAPtableLastRow, i, (!match) ? previousSSID.c_str() : "");
+    client.printf(softAPtableLastRow, i, (!match) ? previousSSID.c_str() : "");
     client.print(softAPtableFoot);
     client.print("</body></html>");
     client.flush();
     client.stop();
     return;
+    */
 }
 
-void handle_setssid()
+esp_err_t handle_setssid(httpd_req_t *req)
 {
+    ESP_LOGI(TAG, "Handle setssid");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+    /*
     if (server.args() < 3)
     {
-        RINFO("Sending %s, for: %s as invalid number of args", response400invalid, server.uri().c_str());
-        server.send_P(400, type_txt, response400invalid);
+        ESP_LOGI(TAG, "Sending %s, for: %s as invalid number of args", response400invalid, server.uri().c_str());
+        server.send(400, type_txt, response400invalid);
         return;
     }
 
@@ -1539,37 +1589,37 @@ void handle_setssid()
 
     if (advanced)
     {
-        RINFO("Requested WiFi SSID: %s (%d) at AP: %02x:%02x:%02x:%02x:%02x:%02x",
-              ssid, net, wifiNet.bssid[0], wifiNet.bssid[1], wifiNet.bssid[2], wifiNet.bssid[3], wifiNet.bssid[4], wifiNet.bssid[5]);
-        snprintf_P(json, JSON_BUFFER_SIZE, PSTR("Setting SSID to: %s locked to Access Point: %02x:%02x:%02x:%02x:%02x:%02x\nRATGDO rebooting.\nPlease wait 30 seconds and connect to RATGDO on new network."),
-                   ssid, wifiNet.bssid[0], wifiNet.bssid[1], wifiNet.bssid[2], wifiNet.bssid[3], wifiNet.bssid[4], wifiNet.bssid[5]);
+        ESP_LOGI(TAG, "Requested WiFi SSID: %s (%d) at AP: %02x:%02x:%02x:%02x:%02x:%02x",
+                 ssid, net, wifiNet.bssid[0], wifiNet.bssid[1], wifiNet.bssid[2], wifiNet.bssid[3], wifiNet.bssid[4], wifiNet.bssid[5]);
+        snprintf(json, JSON_BUFFER_SIZE, ("Setting SSID to: %s locked to Access Point: %02x:%02x:%02x:%02x:%02x:%02x\nRATGDO rebooting.\nPlease wait 30 seconds and connect to RATGDO on new network."),
+                 ssid, wifiNet.bssid[0], wifiNet.bssid[1], wifiNet.bssid[2], wifiNet.bssid[3], wifiNet.bssid[4], wifiNet.bssid[5]);
     }
     else
     {
-        RINFO("Requested WiFi SSID: %s (%d)", ssid);
-        snprintf_P(json, JSON_BUFFER_SIZE, PSTR("Setting SSID to: %s\nRATGDO rebooting.\nPlease wait 30 seconds and connect to RATGDO on new network."), ssid);
+        ESP_LOGI(TAG, "Requested WiFi SSID: %s (%d)", ssid);
+        snprintf(json, JSON_BUFFER_SIZE, ("Setting SSID to: %s\nRATGDO rebooting.\nPlease wait 30 seconds and connect to RATGDO on new network."), ssid);
     }
     server.client().setNoDelay(true);
-    server.send_P(200, type_txt, json);
+    server.send(200, type_txt, json);
     delay(500);
     server.stop();
 
     const bool connected = WiFi.isConnected();
-    String previousSSID;
-    String previousPSK;
-    String previousBSSID;
+    std::string previousSSID;
+    std::string previousPSK;
+    std::string previousBSSID;
     if (connected)
     {
         previousSSID = WiFi.SSID();
         previousPSK = WiFi.psk();
         previousBSSID = WiFi.BSSIDstr();
-        RINFO("Current SSID: %s / BSSID:%s", previousSSID.c_str(), previousBSSID.c_str());
+        ESP_LOGI(TAG, "Current SSID: %s / BSSID:%s", previousSSID.c_str(), previousBSSID.c_str());
         WiFi.disconnect();
     }
 
     if (connect_wifi(ssid, pw, (advanced) ? wifiNet.bssid : NULL))
     {
-        RINFO("WiFi Successfully connects to SSID: %s", ssid);
+        ESP_LOGI(TAG, "WiFi Successfully connects to SSID: %s", ssid);
         // We should reset WiFi if changing networks or were not currently connected.
         if (!connected || previousBSSID != ssid)
         {
@@ -1583,10 +1633,10 @@ void handle_setssid()
     }
     else
     {
-        RINFO("WiFi Failed to connect to SSID: %s", ssid);
+        ESP_LOGI(TAG, "WiFi Failed to connect to SSID: %s", ssid);
         if (connected)
         {
-            RINFO("Resetting WiFi to previous SSID: %s, removing any Access Point BSSID lock", previousSSID.c_str());
+            ESP_LOGI(TAG, "Resetting WiFi to previous SSID: %s, removing any Access Point BSSID lock", previousSSID.c_str());
             connect_wifi(previousSSID.c_str(), previousPSK.c_str());
         }
         else
@@ -1603,4 +1653,5 @@ void handle_setssid()
     }
     sync_and_restart();
     return;
+    */
 }

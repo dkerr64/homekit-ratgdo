@@ -1,28 +1,54 @@
-// Copyright 2023 Brandon Matthews <thenewwazoo@optimaltour.us>
-// All rights reserved. GPLv3 License
+/****************************************************************************
+ * RATGDO HomeKit for ESP32
+ * https://ratcloud.llc
+ * https://github.com/PaulWieland/ratgdo
+ * 
+ * Copyright (c) 2023-24 David A Kerr... https://github.com/dkerr64/
+ * All Rights Reserved.
+ * Licensed under terms of the GPL-3.0 License.
+ * 
+ * Contributions acknowledged from
+ * Brandon Matthews... https://github.com/thenewwazoo
+ * Jonathan Stroud...  https://github.com/jgstroud
+ * 
+ */
+#pragma once
 
-#ifndef WIFI_INFO_H_
-#define WIFI_INFO_H_
-
+// C/C++ language includes
+#include <string>
 #include <set>
 
-void improv_loop();
+// ESP system includes
+// none
 
-void wifi_connect();
+// RATGDO project includes
+// none
 
-void wifi_scan();
+//void improv_loop();
 
-bool connect_wifi(const std::string& ssid, const std::string& password, const uint8_t *bssid);
-bool connect_wifi(const std::string& ssid, const std::string& password);
+//void wifi_connect();
 
-typedef struct
+//void wifi_scan();
+
+//bool connect_wifi(const std::string& ssid, const std::string& password, const uint8_t *bssid);
+//bool connect_wifi(const std::string& ssid, const std::string& password);
+
+void wifi_task_entry(void* ctx);
+
+struct wifiNet_t
 {
-    String ssid;
+    std::string ssid;
     int32_t rssi;
     int32_t channel;
     uint8_t bssid[6];
-} wifiNet_t;
+};
 extern std::multiset<wifiNet_t, bool (*)(wifiNet_t, wifiNet_t)> wifiNets;
-extern station_config wifiConf;
+//extern station_config wifiConf;
 
-#endif /* WIFI_INFO_H_ */
+enum class WifiStatus {
+    Disconnected,
+    Pending,
+    Connected,
+};
+
+extern char macAddress[];

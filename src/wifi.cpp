@@ -1,345 +1,508 @@
-// Copyright 2023 Brandon Matthews <thenewwazoo@optimaltour.us>
-// All rights reserved. GPLv3 License
-
-/* WiFi configuration and setup
+/****************************************************************************
+ * RATGDO HomeKit for ESP32
+ * https://ratcloud.llc
+ * https://github.com/PaulWieland/ratgdo
  *
- * This approach relies on the ESP8266 Arduino WiFi class storing credentials
- * in EEPROM on our behalf, and its ability to continue to attempt to
- * reconnect. If there are stored credentials, `WiFi.begin()` will use them. If
- * not, Improv will eventually call `WiFi.begin`, and in doing so will store
- * the credentials. If connection does not succeed after 2 seconds, the stored
- * credentials will be erased.
+ * Copyright (c) 2023-24 David A Kerr... https://github.com/dkerr64/
+ * All Rights Reserved.
+ * Licensed under terms of the GPL-3.0 License.
  *
- * Portions of this code written by Jonathas Barbosa <jnths@gmail.com>, and adapted from
- *   https://github.com/jnthas/improv-wifi-demo
+ * Contributions acknowledged from
+ * Brandon Matthews... https://github.com/thenewwazoo
+ * Jonathan Stroud...  https://github.com/jgstroud
+ *
  */
 
-// #if defined(ESP8266)
-#include <ESP8266WiFi.h>
-#include <ESP8266Ping.h>
-// #elif defined(ESP32)
-// #include <WiFi.h>
-// #endif
-#include "improv.h"
-#include <Arduino.h>
+// C/C++ language includes
+#include <cstring>
+// ESP system includes
+#include <driver/uart.h>
+#include <esp_err.h>
+#include <esp_log.h>
+#include <esp_netif.h>
+#include <esp_wifi.h>
+#include <esp_event.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <nvs.h>
+#include <wifi_provisioning/manager.h>
+#include <wifi_provisioning/scheme_ble.h>
+
+// RATGDO project includes
+#include "wifi.h"
 #include "ratgdo.h"
 #include "log.h"
-#include "utilities.h"
-#include "wifi.h"
+#include "config.h"
+#include "led.h"
 
-// support for changeing WiFi settings
-unsigned long wifiConnectTimeout = 0;
-// support for scaning WiFi networks
-bool wifiNetsCmp(wifiNet_t a, wifiNet_t b)
-{
-    // Sorts first by SSID and then by RSSI so strongest signal first.
-    return (a.ssid < b.ssid) || ((a.ssid == b.ssid) && (a.rssi > b.rssi));
-}
-std::multiset<wifiNet_t, decltype(&wifiNetsCmp)> wifiNets(&wifiNetsCmp);
-station_config wifiConf;
+// Logger tag
+static const char *TAG = "ratgdo-wifi";
 
-#define MAX_ATTEMPTS_WIFI_CONNECTION 30
-uint8_t x_buffer[128];
+static const int WIFI_CONNECTED_EVENT = BIT0;
+static EventGroupHandle_t wifi_event_group;
+
+esp_err_t app_wifi_start(TickType_t ticks_to_wait);
+
+#define UART_BUF_SZ (256)
+#define UART_EVT_Q_SZ (8)
+static QueueHandle_t uart0_queue;
+
+#define MAX_ATTEMPTS_WIFI_CONNECTION 5
+const uint16_t NETWORK_COUNT = 16;
+uint8_t x_buffer[32 /* bytes per ssid */ + 64 /* bytes per password */ + 16 /* bytes overhead */];
 uint8_t x_position = 0;
+uint8_t dtmp[UART_BUF_SZ];
 
+wifi_ap_record_t wifi_ap[NETWORK_COUNT];
+
+/*
 void set_error(improv::Error error);
 void send_response(std::vector<uint8_t> &response);
 void set_state(improv::State state);
 void get_available_wifi_networks();
 bool on_command_callback(improv::ImprovCommand cmd);
 void on_error_callback(improv::Error err);
+*/
+bool connect_wifi(std::string &ssid, std::string &password);
 
-WiFiEventHandler connectedHandler;
-WiFiEventHandler disconnectedHandler;
-WiFiEventHandler gotIPHandler;
-WiFiEventHandler dhcpTimeoutHandler;
+wifi_config_t wifi_config = {};
+const size_t WIFI_SSID_MAX_LEN = 31; // 802.11 point 7.3.2.1, plus NUL terminator
+char wifi_ssid[WIFI_SSID_MAX_LEN + 1];
+const size_t WIFI_PASS_MAX_LEN = 64; // from defn of wifi_sta_config_t
+char wifi_pass[WIFI_PASS_MAX_LEN];
 
-void onConnected(const WiFiEventStationModeConnected &evt)
+char macAddress[18] = "";
+
+//static int s_retry_num = 0;
+static WifiStatus wifi_status = WifiStatus::Disconnected;
+//static esp_ip4_addr_t ip_info;
+
+//static nvs_handle_t wifi_nvs_handle;
+
+// Event handler for catching system events
+static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
-    RINFO("WiFi connected SSID: %s, Channel: %d", evt.ssid.c_str(), evt.channel);
-}
-
-void onDisconnected(const WiFiEventStationModeDisconnected &evt)
-{
-    RINFO("WiFi disconnected SSID: %s, BSSID: %02x:%02x:%02x:%02x:%02x:%02x, Reason: %d", evt.ssid.c_str(),
-          evt.bssid[0], evt.bssid[1], evt.bssid[2], evt.bssid[3], evt.bssid[4], evt.bssid[5], evt.reason);
-}
-
-void onGotIP(const WiFiEventStationModeGotIP &evt)
-{
-    strlcpy(userConfig->IPaddress, evt.ip.toString().c_str(), sizeof(userConfig->IPaddress));
-    strlcpy(userConfig->IPnetmask, evt.mask.toString().c_str(), sizeof(userConfig->IPnetmask));
-    strlcpy(userConfig->IPgateway, evt.gw.toString().c_str(), sizeof(userConfig->IPgateway));
-    strlcpy(userConfig->IPnameserver, (WiFi.dnsIP().isSet()) ? WiFi.dnsIP().toString().c_str() : evt.gw.toString().c_str(), sizeof(userConfig->IPnameserver));
-    write_config_to_file();
-    RINFO("WiFi Got IP: %s, Mask: %s, Gateway: %s, DNS: %s", userConfig->IPaddress, userConfig->IPnetmask, userConfig->IPgateway, userConfig->IPnameserver);
-}
-
-void onDHCPTimeout()
-{
-    RINFO("WiFi DHCP Timeout");
-}
-
-void wifi_scan()
-{
-    // scan for networks
-    RINFO("Scanning for networks...");
-    wifiNet_t wifiNet;
-    wifiNets.clear();
-    int nNets = std::min((int)WiFi.scanNetworks(), 127);
-    RINFO("Found %d networks", nNets);
-    for (int i = 0; i < nNets; i++)
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START)
     {
-        wifiNet.ssid = WiFi.SSID(i);
-        wifiNet.channel = WiFi.channel(i);
-        wifiNet.rssi = WiFi.RSSI(i);
-        memcpy(wifiNet.bssid, WiFi.BSSID(i), sizeof(wifiNet.bssid));
-        RINFO("Network: %s (Ch:%d, %ddBm) AP: %s", WiFi.SSID(i).c_str(), WiFi.channel(i), WiFi.RSSI(i), WiFi.BSSIDstr(i).c_str());
-        wifiNets.insert(wifiNet);
+        wifi_status = WifiStatus::Pending;
+        esp_wifi_connect();
     }
-    // delete scan from memory
-    WiFi.scanDelete();
-}
-
-void wifi_connect()
-{
-    RINFO("=== Initialize WiFi %s", (softAPmode) ? "Soft Access Point" : "Station");
-    IRAM_START
-    // IRAM heap is used only for allocating globals, to leave as much regular heap
-    // available during operations.  We need to carefully monitor useage so as not
-    // to exceed available IRAM.  We can adjust the LOG_BUFFER_SIZE (in log.h) if we
-    // need to make more space available for initialization.
-    WiFi.persistent(false);
-    if (softAPmode)
+    else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED)
     {
-        RINFO("Start AP mode for: %s", device_name_rfc952);
-        bool apStarted = WiFi.softAP(device_name_rfc952);
-        if (apStarted)
+        ESP_LOGI(TAG, "WiFi Connected");
+        // esp_netif_create_ip6_linklocal((esp_netif_t *)arg);
+        // ((esp_netif_t *)arg)->ip_info->ip;
+    }
+    else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
+    {
+        wifi_status = WifiStatus::Connected;
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+        ESP_LOGI(TAG, "WiFi Got IP Address");
+        // ESP_LOGI(TAG, "IP: %08X", (unsigned int)event->ip_info.ip.addr);
+        char ipAddr[16];
+        snprintf(ipAddr, sizeof(ipAddr), IPSTR, IP2STR(&(event->ip_info.ip)));
+        userConfig->set(cfg_localIP, ipAddr);
+        snprintf(ipAddr, sizeof(ipAddr), IPSTR, IP2STR(&(event->ip_info.gw)));
+        userConfig->set(cfg_gatewayIP, ipAddr);
+        snprintf(ipAddr, sizeof(ipAddr), IPSTR, IP2STR(&(event->ip_info.netmask)));
+        userConfig->set(cfg_subnetMask, ipAddr);
+        esp_netif_dns_info_t dns;
+        if (ESP_OK == esp_netif_get_dns_info(event->esp_netif, ESP_NETIF_DNS_MAIN, &dns))
         {
-            RINFO("AP started with IP %s", WiFi.softAPIP().toString().c_str());
+            snprintf(ipAddr, sizeof(ipAddr), IPSTR, IP2STR(&dns.ip.u_addr.ip4));
+            userConfig->set(cfg_nameserverIP, ipAddr);
+        }
+        uint8_t macAddr[6];
+        if (ESP_OK == esp_netif_get_mac(event->esp_netif, macAddr))
+        {
+            snprintf(macAddress, sizeof(macAddress), "%02x:%02x:%02x:%02x:%02x:%02x", macAddr[0], macAddr[1], macAddr[2], macAddr[3], macAddr[4], macAddr[5]);
+        }
+
+        ESP_LOGI(TAG, "Connected with IP Address: %s", userConfig->getLocalIP().c_str());
+        /* Signal main application to continue execution */
+        xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_EVENT);
+    }
+    else if (event_base == IP_EVENT && event_id == IP_EVENT_GOT_IP6)
+    {
+        wifi_status = WifiStatus::Connected;
+        ip_event_got_ip6_t *event = (ip_event_got_ip6_t *)event_data;
+        ESP_LOGI(TAG, "Connected with IPv6 Address:" IPV6STR, IPV62STR(event->ip6_info.ip));
+    }
+    else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED)
+    {
+        ESP_LOGI(TAG, "Disconnected. Connecting to the AP again...");
+        wifi_status = WifiStatus::Pending;
+        esp_wifi_connect();
+    }
+    else if (event_base == WIFI_PROV_EVENT)
+    {
+        switch (event_id)
+        {
+        case WIFI_PROV_START:
+            ESP_LOGI(TAG, "Provisioning started");
+            break;
+        case WIFI_PROV_CRED_RECV:
+        {
+            wifi_sta_config_t *wifi_sta_cfg = (wifi_sta_config_t *)event_data;
+            ESP_LOGI(TAG,
+                     "Received Wi-Fi credentials"
+                     "\n\tSSID     : %s\n\tPassword : %s",
+                     (const char *)wifi_sta_cfg->ssid,
+                     (const char *)wifi_sta_cfg->password);
+            break;
+        }
+        case WIFI_PROV_CRED_FAIL:
+        {
+            wifi_prov_sta_fail_reason_t *reason =
+                (wifi_prov_sta_fail_reason_t *)event_data;
+            ESP_LOGE(TAG,
+                     "Provisioning failed!\n\tReason : %s"
+                     "\n\tPlease reset to factory and retry provisioning",
+                     (*reason == WIFI_PROV_STA_AUTH_ERROR)
+                         ? "Wi-Fi station authentication failed"
+                         : "Wi-Fi access-point not found");
+            break;
+        }
+        case WIFI_PROV_CRED_SUCCESS:
+            ESP_LOGI(TAG, "Provisioning successful");
+            break;
+        case WIFI_PROV_END:
+            /* De-initialize manager once provisioning is finished */
+            wifi_prov_mgr_deinit();
+            break;
+        default:
+            break;
+        }
+    }
+}
+/*
+static void event_handler(void *arg, esp_event_base_t event_base,                         int32_t event_id, void *event_data)
+{
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START)
+    {
+        ESP_LOGD(TAG, "wifi event station start");
+        wifi_status = WifiStatus::Pending;
+        esp_wifi_connect();
+    }
+    else if (event_base == WIFI_EVENT &&         event_id == WIFI_EVENT_STA_DISCONNECTED)
+    {
+        ESP_LOGD(TAG, "wifi event station disconnected");
+        if (s_retry_num < MAX_ATTEMPTS_WIFI_CONNECTION)
+        {
+            wifi_status = WifiStatus::Pending;
+            ESP_LOGI(TAG, "retry to connect to the AP");
+            esp_wifi_connect();
+            s_retry_num++;
         }
         else
         {
-            RINFO("Error starting AP mode");
+            wifi_status = WifiStatus::Disconnected;
+            ESP_LOGI(TAG, "connect to the AP fail");
         }
-        userConfig->wifiSettingsChanged = false;
-        wifi_scan();
     }
-    else
+    else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
     {
-        if (userConfig->wifiSettingsChanged)
-        {
-            RINFO("WARNING: WiFi settings changed. Will check for connection after 30 seconds.");
-        }
-        switch (userConfig->wifiPhyMode)
-        {
-        case WIFI_PHY_MODE_11B:
-            RINFO("Setting WiFi preference to 802.11b (Wi-Fi 1)");
-            break;
-        case WIFI_PHY_MODE_11G:
-            RINFO("Setting WiFi preference to 802.11g (Wi-Fi 3)");
-            break;
-        case WIFI_PHY_MODE_11N:
-            RINFO("Setting WiFi preference to 802.11n (Wi-Fi 4)");
-            break;
-        default:
-            RINFO("Setting WiFi version preference to automatic");
-        }
-        WiFi.mode(WIFI_STA);
-        WiFi.setSleepMode(WIFI_NONE_SLEEP);
-        WiFi.setPhyMode((WiFiPhyMode_t)userConfig->wifiPhyMode);
-        if (userConfig->wifiPower < 20)
-        {
-            // Only set WiFi power if set to less than the maximum
-            RINFO("Setting WiFi power to %d", userConfig->wifiPower);
-            WiFi.setOutputPower((float)userConfig->wifiPower);
-        }
-        WiFi.setAutoReconnect(true); // don't require explicit attempts to reconnect in the main loop
+        wifi_status = WifiStatus::Connected;
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+        ESP_LOGI(TAG, "got ip:" IPSTR "\n", IP2STR(&event->ip_info.ip));
+        memcpy(&ip_info, &event->ip_info.ip, sizeof(esp_ip4_addr_t));
+        s_retry_num = 0;
+    }
+}
+*/
 
-        RINFO("Set WiFi Host Name: %s", device_name_rfc952);
-        WiFi.hostname((const char *)device_name_rfc952);
+void wifi_task_entry(void *ctx)
+{
+    ESP_LOGI(TAG, "Entered WiFi task thread");
+    // Initialize TCP/IP
+    ESP_ERROR_CHECK(esp_netif_init());
+    // Initialize the event loop
+    // ESP_ERROR_CHECK(esp_event_loop_create_default());
+    wifi_event_group = xEventGroupCreate();
+    // Initialize Wi-Fi including netif with default config
+    esp_netif_t *wifi_netif = esp_netif_create_default_wifi_sta();
+    // Register our event handler for Wi-Fi, IP and Provisioning related events
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, wifi_netif));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_GOT_IP6, &event_handler, NULL));
+    ESP_LOGI(TAG, "WiFi handlers registered");
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    /*
+    esp_err_t err = nvs_open("wifi", NVS_READWRITE, &wifi_nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error (%s) opening wifi NVS handle. Wifi task dying.",
+    esp_err_to_name(err)); return;
+    }
 
-        if (userConfig->staticIP)
+    size_t ssid_len, pass_len;
+    err = nvs_get_str(wifi_nvs_handle, "wifi_ssid", wifi_ssid, &ssid_len);  //
+    TODO make sure ssid err |= nvs_get_str(wifi_nvs_handle, "wifi_pass",
+    wifi_pass, &pass_len); // and pass are
+                                                                            //
+    nul-terminated?
+
+    if (err != ESP_OK) {
+        ESP_LOGI(TAG, "No wifi credentials stored in NVS");
+    } else {
+        std::string s(wifi_ssid);
+        std::string p(wifi_pass);
+        connect_wifi(s, p);
+    }
+    */
+    ESP_ERROR_CHECK(app_wifi_start(portMAX_DELAY));
+    /*
+     std::string s("KIoT");
+     std::string p("abcdefgh");
+     connect_wifi(s, p);
+     */
+
+    ESP_LOGI(TAG, "WiFi initialized");
+    // set up the UART for incoming ?????Improv????? bytes
+    uart_config_t uart_config = {};
+    uart_config.baud_rate = 115200;
+    uart_config.data_bits = UART_DATA_8_BITS;
+    uart_config.parity = UART_PARITY_DISABLE;
+    uart_config.stop_bits = UART_STOP_BITS_1;
+    uart_config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
+    uart_param_config(UART_NUM_0, &uart_config);
+    uart_driver_install(UART_NUM_0, UART_BUF_SZ, UART_BUF_SZ, UART_EVT_Q_SZ,
+                        &uart0_queue, 0);
+
+    ESP_LOGI(TAG, "wifi setup finished.");
+
+    while (true)
+    {
+        uart_event_t event = {};
+
+        if (xQueueReceive(uart0_queue, (void *)&event, (TickType_t)portMAX_DELAY))
         {
-            IPAddress ip;
-            IPAddress gw;
-            IPAddress nm;
-            IPAddress dns;
-            if (ip.fromString(userConfig->IPaddress) &&
-                gw.fromString(userConfig->IPgateway) &&
-                nm.fromString(userConfig->IPnetmask) &&
-                dns.fromString(userConfig->IPnameserver))
+            bzero(dtmp, UART_BUF_SZ);
+
+            if (event.type == UART_DATA)
             {
-                WiFi.config(ip, gw, nm, dns);
+                led->flash();
+                uart_read_bytes(UART_NUM_0, dtmp, event.size, portMAX_DELAY);
+                ESP_LOGI(TAG, "uart read %d bytes", event.size);
+
+                for (size_t i = 0; i < event.size; i++)
+                {
+                    uint8_t b = dtmp[i];
+                    ESP_LOGI(TAG, "handling byte %02X", b);
+                    {
+                        x_position = 0;
+
+                        int count = uxTaskGetNumberOfTasks();
+                        TaskStatus_t *tasks =
+                            (TaskStatus_t *)pvPortMalloc(sizeof(TaskStatus_t) * count);
+                        if (tasks != NULL)
+                        {
+                            uxTaskGetSystemState(tasks, count, NULL);
+
+                            printf("-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-\n");
+                            for (size_t i = 0; i < count; i++)
+                            {
+                                printf("%s\t\\tt%d\t\t%d\n", (char *)tasks[i].pcTaskName, (int)tasks[i].uxBasePriority, (int)tasks[i].usStackHighWaterMark);
+                            }
+                            printf("-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-\n\n");
+                        }
+                        vPortFree(tasks); 
+                    }
+                }
             }
             else
             {
-                RINFO("Failed to set static IP address, error parsing addresses");
+                ESP_LOGI(TAG, "unhandled event type %d", event.type);
             }
         }
     }
-    // Set callbacks so we can monitor connection status
-    connectedHandler = WiFi.onStationModeConnected(&onConnected);
-    disconnectedHandler = WiFi.onStationModeDisconnected(&onDisconnected);
-    gotIPHandler = WiFi.onStationModeGotIP(&onGotIP);
-    dhcpTimeoutHandler = WiFi.onStationModeDHCPTimeout(&onDHCPTimeout);
 
-    wifi_station_get_config_default(&wifiConf);
-    if (wifiConf.bssid_set)
-    {
-        RINFO("Connecting to SSID: %s locked to Access Point: %02x:%02x:%02x:%02x:%02x:%02x, ", wifiConf.ssid,
-              wifiConf.bssid[0], wifiConf.bssid[1], wifiConf.bssid[2], wifiConf.bssid[3], wifiConf.bssid[4], wifiConf.bssid[5]);
-    }
-    else
-    {
-        RINFO("Connecting to SSID: %s", wifiConf.ssid);
-    }
-    RINFO("Starting WiFi connecting in background");
-    wifiConnectTimeout = millis() + 30000;
-    WiFi.begin(); // use credentials stored in flash
-    IRAM_END("Wifi initialized");
+    vTaskDelete(NULL);
 }
 
-void improv_loop()
+bool connect_wifi(std::string &ssid, std::string &password)
 {
-    loop_id = LOOP_IMPROV;
-#ifdef GW_PING_CHECK
-    static unsigned long gw_ping_timeout = 10000;
-    static unsigned long gw_report_interval = 0;
-    // Once a minute ping the Gateway and log
-    unsigned long now = millis();
-    if (now > gw_ping_timeout) {
-        gw_ping_timeout = now + 60000;
-        if (Ping.ping(WiFi.gatewayIP(), 1)) {
-            int lat = Ping.averageTime();
-            // Log success once an hour
-            if ((now > gw_report_interval) || (lat > 100)) {
-                gw_report_interval = now + (60 * 60 * 1000);
-                RINFO("Gateway %s alive %u ms", WiFi.gatewayIP().toString().c_str(), lat);
-            }
-        }
-        else {
-            RINFO("No response from Gateway %s", WiFi.gatewayIP().toString().c_str());
-        }
-    }
-#endif
-    if (Serial.available() > 0)
-    {
-        uint8_t b = Serial.read();
-
-        if (parse_improv_serial_byte(x_position, b, x_buffer, on_command_callback, on_error_callback))
-        {
-            x_buffer[x_position++] = b;
-        }
-        else
-        {
-            x_position = 0;
-        }
-    }
-
-    if (softAPmode && (millis() > 10 * 60 * 1000))
-    {
-        RINFO("In Soft Access Point mode for over 10 minutes, reboot");
-        sync_and_restart();
-        return;
-    }
-
-    if (userConfig->wifiSettingsChanged && (millis() > wifiConnectTimeout))
-    {
-        bool connected = (WiFi.status() == WL_CONNECTED);
-        RINFO("30 seconds since WiFi settings change, connected to access point: %s", (connected) ? "true" : "false");
-        // If not connected, reset to auto.
-        if (!connected)
-        {
-            RINFO("Reset WiFi Power to 20.5 dBm and WiFiPhyMode to: 0");
-            userConfig->wifiPower = 20;
-            userConfig->wifiPhyMode = 0;
-            WiFi.setOutputPower(20.5);
-            WiFi.setPhyMode((WiFiPhyMode_t)0);
-            write_config_to_file();
-            // Now try and reconnect...
-            wifiConnectTimeout = millis() + 30000;
-            WiFi.reconnect();
-            return;
-        }
-        else
-        {
-            RINFO("Connected, test Gatway IP reachable");
-            IPAddress ip;
-            if (!Ping.ping(WiFi.gatewayIP(), 1))
-            {
-                RINFO("Unable to ping Gateway, reset to DHCP to acquire IP address and reconnect");
-                userConfig->staticIP = false;
-                write_config_to_file();
-                IPAddress ip;
-                ip.fromString("0.0.0.0");
-                WiFi.config(ip, ip, ip);
-                // Now try and reconnect...
-                wifiConnectTimeout = millis() + 30000;
-                WiFi.reconnect();
-                return;
-            } else {
-                RINFO("Gateway %s alive %u ms", WiFi.gatewayIP().toString().c_str(), Ping.averageTime());
-            }
-        }
-        // reset flag
-        userConfig->wifiSettingsChanged = false;
-        write_config_to_file();
-    }
-}
-
-bool connect_wifi(const std::string &ssid, const std::string &password)
-{
-    return connect_wifi(ssid, password, NULL);
-}
-
-bool connect_wifi(const std::string &ssid, const std::string &password, const uint8_t *bssid)
-{
-    uint8_t count = 0;
-
-    WiFi.persistent(true); // Set persist to store wifi credentials
-    WiFi.begin(ssid.c_str(), password.c_str(), 0, bssid);
-    WiFi.persistent(false); // clear the persist flag so other settings do not get written to flash
-
-    while (WiFi.status() != WL_CONNECTED)
-    {
-        delay(500);
-        yield();
-        if (count > MAX_ATTEMPTS_WIFI_CONNECTION)
-        {
-            WiFi.disconnect();
-            return false;
-        }
-        count++;
-    }
+    ESP_LOGI(TAG, "Connecting to: %s", ssid.c_str());
+    wifi_config_t wifi_config = {};
+    wifi_config.sta = {};
+    wifi_config.sta.pmf_cfg = {.capable = true, .required = false};
+    strlcpy((char *)wifi_config.sta.ssid, ssid.c_str(),
+            sizeof(wifi_config.sta.ssid));
+    strlcpy((char *)wifi_config.sta.password, password.c_str(),
+            sizeof(wifi_config.sta.password));
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    // Disable power saving, considerably improves pings and we are not battery powered
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+    ESP_ERROR_CHECK(esp_wifi_start());
+    /* Wait for Wi-Fi connection */
+    xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_EVENT, false, true, portMAX_DELAY);
+    ESP_LOGI(TAG, "Connected to WiFi");
     return true;
 }
 
+#define PROV_TRANSPORT_BLE "ble"
+
+static void get_device_service_name(char *service_name, size_t max)
+{
+    uint8_t eth_mac[6];
+    const char *ssid_prefix = "RATGDO_";
+    esp_wifi_get_mac(WIFI_IF_STA, eth_mac);
+    snprintf(service_name, max, "%s%02X%02X%02X",
+             ssid_prefix, eth_mac[3], eth_mac[4], eth_mac[5]);
+}
+
+esp_err_t app_wifi_start(TickType_t ticks_to_wait)
+{
+    /* Configuration for the provisioning manager */
+    wifi_prov_mgr_config_t config = {};
+    /* What is the Provisioning Scheme that we want ?
+     * wifi_prov_scheme_softap or wifi_prov_scheme_ble */
+    config.scheme = wifi_prov_scheme_ble;
+
+    /* Any default scheme specific event handler that you would
+     * like to choose. Since our example application requires
+     * neither BT nor BLE, we can choose to release the associated
+     * memory once provisioning is complete, or not needed
+     * (in case when device is already provisioned). Choosing
+     * appropriate scheme specific event handler allows the manager
+     * to take care of this automatically. This can be set to
+     * WIFI_PROV_EVENT_HANDLER_NONE when using wifi_prov_scheme_softap*/
+    config.scheme_event_handler = WIFI_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BTDM;
+
+    /* Initialize provisioning manager with the
+     * configuration parameters set above */
+    ESP_ERROR_CHECK(wifi_prov_mgr_init(config));
+
+    /* Let's find out if the device is provisioned */
+    bool provisioned = false;
+    ESP_ERROR_CHECK(wifi_prov_mgr_is_provisioned(&provisioned));
+
+    /* If device is not yet provisioned start provisioning service */
+    if (!provisioned)
+    {
+        ESP_LOGI(TAG, "Starting provisioning");
+        esp_netif_create_default_wifi_ap();
+
+        esp_event_handler_register(WIFI_PROV_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL);
+        /* What is the Device Service Name that we want
+         * This translates to :
+         *     - Wi-Fi SSID when scheme is wifi_prov_scheme_softap
+         *     - device name when scheme is wifi_prov_scheme_ble
+         */
+        char service_name[16];
+        get_device_service_name(service_name, sizeof(service_name));
+
+        /* What is the security level that we want (0 or 1):
+         *      - WIFI_PROV_SECURITY_0 is simply plain text communication.
+         *      - WIFI_PROV_SECURITY_1 is secure communication which consists of secure handshake
+         *          using X25519 key exchange and proof of possession (pop) and AES-CTR
+         *          for encryption/decryption of messages.
+         */
+        wifi_prov_security_t security = WIFI_PROV_SECURITY_1;
+
+        /* Do we want a proof-of-possession (ignored if Security 0 is selected):
+         *      - this should be a string with length > 0
+         *      - NULL if not used
+         */
+        static const char pop[] = "abcd1234";
+
+        /* What is the service key (Wi-Fi password)
+         * NULL = Open network
+         * This is ignored when scheme is wifi_prov_scheme_ble
+         */
+        const char *service_key = NULL;
+
+        /* This step is only useful when scheme is wifi_prov_scheme_ble. This will
+         * set a custom 128 bit UUID which will be included in the BLE advertisement
+         * and will correspond to the primary GATT service that provides provisioning
+         * endpoints as GATT characteristics. Each GATT characteristic will be
+         * formed using the primary service UUID as base, with different auto assigned
+         * 12th and 13th bytes (assume counting starts from 0th byte). The client side
+         * applications must identify the endpoints by reading the User Characteristic
+         * Description descriptor (0x2901) for each characteristic, which contains the
+         * endpoint name of the characteristic */
+        uint8_t custom_service_uuid[] = {
+            /* This is a random uuid. This can be modified if you want to change the BLE uuid. */
+            /* 12th and 13th bit will be replaced by internal bits. */
+            0xb4,
+            0xdf,
+            0x5a,
+            0x1c,
+            0x3f,
+            0x6b,
+            0xf4,
+            0xbf,
+            0xea,
+            0x4a,
+            0x82,
+            0x03,
+            0x04,
+            0x90,
+            0x1a,
+            0x02,
+        };
+        esp_err_t err;
+        err = wifi_prov_scheme_ble_set_service_uuid(custom_service_uuid);
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "wifi_prov_scheme_ble_set_service_uuid failed %d", err);
+            return err;
+        }
+
+        /* Start provisioning service */
+        ESP_ERROR_CHECK(wifi_prov_mgr_start_provisioning(security, pop, service_name, service_key));
+        /* Print QR code for provisioning */
+
+        ESP_LOGI(TAG, "Provisioning Started. Name : %s, POP : %s", service_name, pop);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "Already provisioned, starting Wi-Fi STA");
+        /* We don't need the manager as device is already provisioned,
+         * so let's release it's resources */
+        wifi_prov_mgr_deinit();
+        /* Start Wi-Fi station */
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+        ESP_ERROR_CHECK(esp_wifi_start());
+    }
+    /* Wait for Wi-Fi connection */
+    xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_EVENT, false, true, ticks_to_wait);
+    return ESP_OK;
+}
+
+#ifdef IMPROV
 std::vector<std::string> get_local_url()
 {
-    return {
-        // TODO
-        // URL where user can finish onboarding or use device
-        // Recommended to use website hosted by device
-        String("http://" + WiFi.localIP().toString()).c_str()};
+    char buf[25];
+    snprintf(buf, 25, "http://" IPSTR "/", IP2STR(&ip_info));
+
+    return {// TODO
+            // URL where user can finish onboarding or use device
+            // Recommended to use website hosted by device
+            std::string(buf)};
 }
 
 void on_error_callback(improv::Error err)
 {
-    RERROR("improv error: %02X", err);
+    ESP_LOGE(TAG, "improv error: %02X", err);
 }
 
 bool on_command_callback(improv::ImprovCommand cmd)
 {
-
     switch (cmd.command)
     {
     case improv::Command::GET_CURRENT_STATE:
     {
-        if ((WiFi.status() == WL_CONNECTED))
+        ESP_LOGD(TAG, "improv cmd GET_CURRENT_STATE");
+        if ((wifi_status == WifiStatus::Connected))
         {
+            std::vector<std::string> local_url = get_local_url();
+            ESP_LOGD(TAG, "wifi is connected, returning local url %s",
+                     local_url[0].c_str());
             set_state(improv::State::STATE_PROVISIONED);
-            std::vector<uint8_t> data = improv::build_rpc_response(improv::GET_CURRENT_STATE, get_local_url(), false);
+            std::vector<uint8_t> data = improv::build_rpc_response(
+                improv::GET_CURRENT_STATE, local_url, false);
             send_response(data);
         }
         else
@@ -352,6 +515,7 @@ bool on_command_callback(improv::ImprovCommand cmd)
 
     case improv::Command::WIFI_SETTINGS:
     {
+        ESP_LOGD(TAG, "improv cmd WIFI_SETTINGS");
         if (cmd.ssid.length() == 0)
         {
             set_error(improv::Error::ERROR_INVALID_RPC);
@@ -362,12 +526,17 @@ bool on_command_callback(improv::ImprovCommand cmd)
 
         if (connect_wifi(cmd.ssid, cmd.password))
         {
+            ESP_LOGD(TAG, "connect_wifi returned true");
+
             set_state(improv::STATE_PROVISIONED);
-            std::vector<uint8_t> data = improv::build_rpc_response(improv::WIFI_SETTINGS, get_local_url(), false);
+            std::vector<uint8_t> data = improv::build_rpc_response(
+                improv::WIFI_SETTINGS, get_local_url(), false);
             send_response(data);
         }
         else
         {
+            ESP_LOGD(TAG, "connect_wifi did not return true");
+
             set_state(improv::STATE_STOPPED);
             set_error(improv::Error::ERROR_UNABLE_TO_CONNECT);
         }
@@ -377,18 +546,20 @@ bool on_command_callback(improv::ImprovCommand cmd)
 
     case improv::Command::GET_DEVICE_INFO:
     {
-        std::vector<std::string> infos = {
-            DEVICE_NAME,
-            AUTO_VERSION,
-            CHIP_FAMILY,
-            MODEL_NAME};
-        std::vector<uint8_t> data = improv::build_rpc_response(improv::GET_DEVICE_INFO, infos, false);
+        ESP_LOGD(TAG, "improv cmd GET_DEVICE_INFO");
+
+        std::vector<std::string> infos = {DEVICE_NAME, AUTO_VERSION, CHIP_FAMILY,
+                                          MODEL_NAME};
+        std::vector<uint8_t> data =
+            improv::build_rpc_response(improv::GET_DEVICE_INFO, infos, false);
         send_response(data);
         break;
     }
 
     case improv::Command::GET_WIFI_NETWORKS:
     {
+        ESP_LOGD(TAG, "improv cmd GET_WIFI_NETWORKS");
+
         get_available_wifi_networks();
         break;
     }
@@ -405,64 +576,54 @@ bool on_command_callback(improv::ImprovCommand cmd)
 
 void get_available_wifi_networks()
 {
-    int networkNum = WiFi.scanNetworks();
-
-    int sortedIndicies[networkNum];
-    for (int i = 0; i < networkNum; i++)
+    esp_err_t err = esp_wifi_scan_start(NULL, 1000);
+    if (err != ESP_OK)
     {
-        sortedIndicies[i] = i;
+        ESP_LOGE(TAG, "failed to start wifi scan: %s", esp_err_to_name(err));
+        return;
     }
 
-    // sort networks by RSSI, strongest to weakest
-    for (int i = 0; i < networkNum; i++)
+    uint16_t network_count = NETWORK_COUNT;
+    err = esp_wifi_scan_get_ap_records(&network_count, wifi_ap);
+    if (err != ESP_OK)
     {
-        for (int j = i + 1; j < networkNum; j++)
-        {
-            if (WiFi.RSSI(sortedIndicies[j]) > WiFi.RSSI(sortedIndicies[i]))
-            {
-                std::swap(sortedIndicies[i], sortedIndicies[j]);
-            }
-        }
+        ESP_LOGE(TAG, "failed to get wifi scan results: %s", esp_err_to_name(err));
+        return;
     }
 
-    // find duplicates (must be RSSI sorted)
-    String temp_ssid;
-    for (int i = 0; i < networkNum; i++)
-    {
-        if (sortedIndicies[i] == -1)
-            continue; // skip duplicate
-        temp_ssid = WiFi.SSID(sortedIndicies[i]);
-        for (int j = i + 1; j < networkNum; j++)
-        {
-            if (temp_ssid == WiFi.SSID(sortedIndicies[j]))
-            {
-                sortedIndicies[j] = -1; // set dupes to -1 to skip later
-            }
-        }
-    }
+    // TODO re-introduce feature that sorted by RSSI networks with the same SSID,
+    // and discarded all but the strongest.
 
-    for (int id = 0; id < networkNum; ++id)
+    for (uint16_t i = 0; i < network_count; ++i)
     {
-        if (sortedIndicies[id] == -1)
-            continue; // skip duplicate
         std::vector<uint8_t> data = improv::build_rpc_response(
-            improv::GET_WIFI_NETWORKS, {WiFi.SSID(sortedIndicies[id]), String(WiFi.RSSI(sortedIndicies[id])), (WiFi.encryptionType(sortedIndicies[id]) == ENC_TYPE_NONE ? "NO" : "YES")}, false);
+            improv::GET_WIFI_NETWORKS,
+            {std::string((const char *)wifi_ap[i].ssid),
+             std::to_string(wifi_ap[i].rssi),
+             std::string(wifi_ap[i].authmode == WIFI_AUTH_OPEN ? "NO" : "YES")},
+            false);
         send_response(data);
-        delay(1);
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
     // final response
-    std::vector<uint8_t> data =
-        improv::build_rpc_response(improv::GET_WIFI_NETWORKS, std::vector<std::string>{}, false);
+    std::vector<uint8_t> data = improv::build_rpc_response(
+        improv::GET_WIFI_NETWORKS, std::vector<std::string>{}, false);
     send_response(data);
-
-    // delete scan from memory
-    WiFi.scanDelete();
 }
+enum State : uint8_t
+{
+    STATE_STOPPED = 0x00,
+    STATE_AWAITING_AUTHORIZATION = 0x01,
+    STATE_AUTHORIZED = 0x02,
+    STATE_PROVISIONING = 0x03,
+    STATE_PROVISIONED = 0x04,
+};
 
 void set_state(improv::State state)
 {
+    ESP_LOGD(TAG, "setting improv state to %d", state);
 
-    std::vector<uint8_t> data = {'I', 'M', 'P', 'R', 'O', 'V'};
+    std::vector<char> data = {'I', 'M', 'P', 'R', 'O', 'V'};
     data.resize(11);
     data[6] = improv::IMPROV_SERIAL_VERSION;
     data[7] = improv::TYPE_CURRENT_STATE;
@@ -470,43 +631,46 @@ void set_state(improv::State state)
     data[9] = state;
 
     uint8_t checksum = 0x00;
-    for (uint8_t d : data)
+    for (char d : data)
         checksum += d;
     data[10] = checksum;
 
-    Serial.write(data.data(), data.size());
+    uart_write_bytes(UART_NUM_0, data.data(), data.size());
 }
 
 void send_response(std::vector<uint8_t> &response)
 {
-    std::vector<uint8_t> data = {'I', 'M', 'P', 'R', 'O', 'V'};
+    std::vector<char> data = {'I', 'M', 'P', 'R', 'O', 'V'};
     data.resize(9);
     data[6] = improv::IMPROV_SERIAL_VERSION;
     data[7] = improv::TYPE_RPC_RESPONSE;
     data[8] = response.size();
     data.insert(data.end(), response.begin(), response.end());
 
-    uint8_t checksum = 0x00;
-    for (uint8_t d : data)
+    char checksum = 0x00;
+    for (char d : data)
         checksum += d;
     data.push_back(checksum);
 
-    Serial.write(data.data(), data.size());
+    uart_write_bytes(UART_NUM_0, data.data(), data.size());
 }
 
 void set_error(improv::Error error)
 {
-    std::vector<uint8_t> data = {'I', 'M', 'P', 'R', 'O', 'V'};
+    ESP_LOGW(TAG, "improv returning error %d", error);
+
+    std::vector<char> data = {'I', 'M', 'P', 'R', 'O', 'V'};
     data.resize(11);
     data[6] = improv::IMPROV_SERIAL_VERSION;
     data[7] = improv::TYPE_ERROR_STATE;
     data[8] = 1;
     data[9] = error;
 
-    uint8_t checksum = 0x00;
-    for (uint8_t d : data)
+    char checksum = 0x00;
+    for (char d : data)
         checksum += d;
     data[10] = checksum;
 
-    Serial.write(data.data(), data.size());
+    uart_write_bytes(UART_NUM_0, data.data(), data.size());
 }
+#endif

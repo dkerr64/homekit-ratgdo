@@ -1,3 +1,9 @@
-[submodule "secplus"]
-	path = lib/secplus
+[submodule "components/esp_littlefs"]
+	path = components/esp_littlefs
+	url = https://github.com/joltwallet/esp_littlefs.git
+[submodule "components/esp-homekit-sdk"]
+	path = components/esp-homekit-sdk
+	url = https://github.com/espressif/esp-homekit-sdk.git
+[submodule "components/secplus"]
+	path = components/secplus/secplus
 	url = https://github.com/argilo/secplus.git

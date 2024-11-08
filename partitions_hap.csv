@@ -1,0 +1,29 @@
+# Name,   Type, SubType, Offset,  Size, Flags
+# Note: Firmware partition offset needs to be 64K aligned, initial 36K (9 sectors) are reserved for bootloader and partition table
+sec_cert,    0x3F, ,           0xD000,    0x3000, ,  # Never mark this as an encrypted partition
+nvs,         data, nvs,       0x10000,    0x6000,
+otadata,     data, ota,      ,            0x2000,
+phy_init,    data, phy,      ,            0x1000,
+ota_0,       app,  ota_0,     0x20000,  0x1C0000,
+ota_1,       app,  ota_1,    ,          0x1C0000,
+factory_nvs, data, nvs,      0x3A0000,    0x6000,
+nvs_keys,    data, nvs_keys, 0x3A6000,    0x1000,
+littlefs,    data, littlefs, 0x3A7000,   0x59000,
+# Notes...
+#    0 KB:  bootloader  size   52 KB
+#   52 KB:  sec_cert    size   12 KB
+#   64 KB:  nvs         size   24 KB
+#           otadata     size    8 KB
+#           phy_init    size    4 KB
+#           <unused>    size   28 KB
+#  128 KB:  ota_0       size 1792 KB
+#           ota_0       size 1792 KB
+# 3712 KB:  factory_nvs size   24 KB
+# 3736 KB:  nvs_keys    size    4 KB
+# 3740 KB:  littlefs    size  356 KB
+# 4096 KB:  end
+
+# nvs starts at 64KB size 24KB
+# otadata adds 8KB
+# phy_init adds 4KB
+# un

@@ -1,21 +1,42 @@
-#ifndef _RATGDO_H
-#define _RATGDO_H
+/****************************************************************************
+ * RATGDO HomeKit for ESP32
+ * https://ratcloud.llc
+ * https://github.com/PaulWieland/ratgdo
+ * 
+ * Copyright (c) 2023-24 David A Kerr... https://github.com/dkerr64/
+ * All Rights Reserved.
+ * Licensed under terms of the GPL-3.0 License.
+ * 
+ * Contributions acknowledged from
+ * Brandon Matthews... https://github.com/thenewwazoo
+ * Jonathan Stroud...  https://github.com/jgstroud
+ * 
+ */
+#pragma once
 
-#include <Arduino.h>
+// C/C++ language includes
+// none
+
+// ESP system includes
+#include <driver/gpio.h>
+
+// RATGDO project includes
 #include "homekit_decl.h"
 
 #define DEVICE_NAME "homekit-ratgdo"
 #define MANUF_NAME "ratCloud llc"
 #define SERIAL_NUMBER "0P3ND00R"
-#define MODEL_NAME "ratgdo_v2.5"
-#define CHIP_FAMILY "ESP8266"
+#define MODEL_NAME "ratgdo_32"
+#define CHIP_FAMILY "ESP32"
 
 /********************************** PIN DEFINITIONS *****************************************/
 
-#define UART_TX_PIN D1 // red control terminal / GarageDoorOpener (UART1 TX)
-#define UART_RX_PIN D2 // red control terminal / GarageDoorOpener (UART1 RX)
+const gpio_num_t UART_TX_PIN = GPIO_NUM_17;
+const gpio_num_t UART_RX_PIN = GPIO_NUM_21;
+const gpio_num_t LED_BUILTIN = GPIO_NUM_2;
 
-#define INPUT_OBST_PIN D7 // black obstruction sensor terminal
+// TODO obstruction refactor
+// const gpio_num_t INPUT_OBST_PIN = GPIO_NUM_13; // black obstruction sensor terminal
 
 /*
  * TODO add support for dry contact switches
@@ -78,36 +99,3 @@ struct ForceRecover
    uint8_t push_count;
    unsigned long timeout;
 };
-
-class LED
-{
-private:
-    uint8_t activeState = LOW;   // LOW == LED on, HIGH == LED off
-    uint8_t idleState = HIGH;    // opposite of active
-    unsigned long resetTime = 0; // Stores time when LED should return to idle state
-    bool initialized = false;
-
-public:
-    LED();
-
-    void on();
-    void off();
-    void idle();
-    void flash(unsigned long ms = 0);
-    void setIdleState(uint8_t state);
-    uint8_t getIdleState() { return idleState; };
-};
-
-extern LED led;
-
-#define LOOP_SYSTEM 0
-#define LOOP_IMPROV 1
-#define LOOP_COMMS  2
-#define LOOP_HK     3
-#define LOOP_TIMER  4
-#define LOOP_WEB    5
-extern uint8_t loop_id;
-
-#define FLASH_MS 50
-
-#endif // _RATGDO_H

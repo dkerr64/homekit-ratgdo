@@ -23,20 +23,18 @@
 // RATGDO project includes
 // none
 
-#define DEVICE_NAME_SIZE 32
-#define SERIAL_NAME_SIZE 18
+#define COMMS_TASK_NAME   ("comms")
+#define COMMS_TASK_PRIO   (1)
+#define COMMS_TASK_STK_SZ (8 * 1024)
 
-extern char device_name[DEVICE_NAME_SIZE];
-extern char device_name_rfc952[DEVICE_NAME_SIZE];
+#define HOMEKIT_TASK_NAME   ("homekit")
+#define HOMEKIT_TASK_PRIO   (2)
+#define HOMEKIT_TASK_STK_SZ (4 * 1024)
 
-void homekit_task_entry(void* ctx);
+#define WIFI_TASK_NAME   ("wifi")
+#define WIFI_TASK_PRIO   (1)
+#define WIFI_TASK_STK_SZ (8 * 1024)
 
-void notify_homekit_target_door_state_change();
-void notify_homekit_current_door_state_change();
-void notify_homekit_active();
-void notify_homekit_target_lock();
-void notify_homekit_current_lock();
-void notify_homekit_obstruction();
-void notify_homekit_light();
-void enable_service_homekit_motion(bool);
-void notify_homekit_motion();
+#define RX_ISR_TASK_NAME ("rx_isr")
+#define RX_ISR_TASK_PRIO (8)
+#define RX_ISR_TASK_STK_SZ (3 * 1024)

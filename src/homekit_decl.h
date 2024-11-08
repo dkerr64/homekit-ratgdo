@@ -1,8 +1,28 @@
-// Copyright 2023 Brandon Matthews <thenewwazoo@optimaltour.us>
-// All rights reserved. GPLv3 License
+/****************************************************************************
+ * RATGDO HomeKit for ESP32
+ * https://ratcloud.llc
+ * https://github.com/PaulWieland/ratgdo
+ * 
+ * Copyright (c) 2023-24 David A Kerr... https://github.com/dkerr64/
+ * All Rights Reserved.
+ * Licensed under terms of the GPL-3.0 License.
+ * 
+ * Contributions acknowledged from
+ * Brandon Matthews... https://github.com/thenewwazoo
+ * Jonathan Stroud...  https://github.com/jgstroud
+ * 
+ */
+#pragma once
 
-#ifndef _HOMEKIT_DECL_H
-#define _HOMEKIT_DECL_H
+// C/C++ language includes
+// none
+
+// ESP system includes
+// none
+
+// RATGDO project includes
+// none
+
 
 #define DEVICE_NAME_SIZE 32
 #define SERIAL_NAME_SIZE 18
@@ -28,4 +48,5 @@ extern char device_name_rfc952[DEVICE_NAME_SIZE];
 #define HOMEKIT_CHARACTERISTIC_TARGET_LOCK_STATE_UNSECURED 0
 #define HOMEKIT_CHARACTERISTIC_TARGET_LOCK_STATE_SECURED 1
 
-#endif // _HOMEKIT_DECL_H
+#define HOMEKIT_CHARACTERISTIC_OBSTRUCTION_SENSOR_CLEAR      0
+#define HOMEKIT_CHARACTERISTIC_OBSTRUCTION_SENSOR_OBSTRUCTED 1

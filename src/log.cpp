@@ -1,38 +1,52 @@
-// Copyright 2023 Brandon Matthews <thenewwazoo@optimaltour.us>
-// All rights reserved. GPLv3 License
+/****************************************************************************
+ * RATGDO HomeKit for ESP32
+ * https://ratcloud.llc
+ * https://github.com/PaulWieland/ratgdo
+ *
+ * Copyright (c) 2023-24 David A Kerr... https://github.com/dkerr64/
+ * All Rights Reserved.
+ * Licensed under terms of the GPL-3.0 License.
+ *
+ * Contributions acknowledged from
+ * Brandon Matthews... https://github.com/thenewwazoo
+ * Jonathan Stroud...  https://github.com/jgstroud
+ *
+ */
 
-#include <stdint.h>
-#include <WiFiUdp.h>
+// C/C++ language includes
+// #include <stdint.h>
+#include <cstring>
+#include <algorithm>
+#include <memory>
+#include <filesystem>
+#include <fstream>
 
+// ESP system includes
+// #include <esp_log.h>
+// #include <esp_err.h>
+// #include <esp_littlefs.h>
+
+// RATGDO project includes
 #include "log.h"
 #include "utilities.h"
-#include "secplus2.h"
-#include "comms.h"
+// #include "secplus2.h"
+// #include "comms.h"
 #include "web.h"
 
-#ifndef UNIT_TEST
-
-#include <Arduino.h>
-
-void print_packet(uint8_t pkt[SECPLUS2_CODE_LEN])
-{
-    RINFO("decoded packet: [%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X]",
-          pkt[0], pkt[1], pkt[2], pkt[3], pkt[4], pkt[5], pkt[6], pkt[7], pkt[8], pkt[9],
-          pkt[10], pkt[11], pkt[12], pkt[13], pkt[14], pkt[15], pkt[16], pkt[17], pkt[18]);
-}
-
-#else // UNIT_TEST
-
-void print_packet(uint8_t pkt[SECPLUS2_CODE_LEN]) {}
-
-#endif // UNIT_TEST
+// Logger tag
+static const char *TAG = "ratgdo-logger";
 
 #ifdef LOG_MSG_BUFFER
-#define LINE_BUFFER_SIZE 256
-char *lineBuffer = NULL;
-logBuffer *msgBuffer = NULL; // Buffer to save log messages as they occur
-File logMessageFile;
+vprintf_like_t systemLogFn;
+SemaphoreHandle_t mutexLogger = NULL;
 
+#define LINE_BUFFER_SIZE 256
+// char *lineBuffer = NULL;
+logBuffer *msgBuffer = NULL; // Buffer to save log messages as they occur
+
+// fstream logMessageFile;
+
+#ifdef SYSLOG
 #define SYSLOG_PORT 514
 #define SYSLOG_LOCAL0 16
 #define SYSLOG_EMERGENCY 0
@@ -78,7 +92,7 @@ void logToSyslog(char *message)
 #if defined(NTP_CLIENT) && defined(USE_NTP_TIMESTAMP)
     syslog.print((enableNTP && clockSet) ? timeString(0, true) : SYSLOG_NIL);
 #else
-    syslog.print(SYSLOG_NIL);         // Time - let the syslog server insert time
+    syslog.print(SYSLOG_NIL); // Time - let the syslog server insert time
 #endif
     syslog.print(" ");
     syslog.print(device_name_rfc952); // hostname
@@ -88,55 +102,45 @@ void logToSyslog(char *message)
     syslog.print(" " SYSLOG_NIL    // message ID
                  " " SYSLOG_NIL    // structured data
 #ifdef USE_UTF8_BOM
-                 " " SYSLOG_BOM);  // BOM - indicates UTF-8 encoding
+                 " " SYSLOG_BOM); // BOM - indicates UTF-8 encoding
 #else
-                 " " );            // No BOM
+                 " "); // No BOM
 #endif
-    syslog.print(msg);             // message
+    syslog.print(msg); // message
 
     syslog.endPacket();
 }
+#endif
 
-void logToBuffer_P(const char *fmt, ...)
+// Make sure that CONFIG_LOG_COLORS is not set in menuconfig.
+int logToBuffer(const char *format, va_list args)
 {
+    // start by calling the system logger
+    int rc = systemLogFn(format, args);
+    // now do our thing, protected by mutex.
+    // CAUTION, do not use ESP_LOGx() within this mutex
+    char lineBuffer[LINE_BUFFER_SIZE];
+    //xSemaphoreTake(mutexLogger, portMAX_DELAY);
     if (!msgBuffer)
     {
         // first time in we need to create the buffers
-        Serial.printf_P(PSTR("Allocating memory for logs\n"));
-        IRAM_START
-        // IRAM heap is used only for allocating globals, to leave as much regular heap
-        // available during operations.  We need to carefully monitor useage so as not
-        // to exceed available IRAM.  We can adjust the LOG_BUFFER_SIZE (in log.h) if we
-        // need to make more space available for initialization.
-#if defined(MMU_IRAM_HEAP)
-        Serial.printf_P(PSTR("IRAM heap size %d\n"), MMU_SEC_HEAP_SIZE);
-#endif
+        printf("Allocating memory for logs\n");
         msgBuffer = (logBuffer *)malloc(sizeof(logBuffer));
-        Serial.printf_P(PSTR("Allocated %d bytes for message log buffer\n"), sizeof(logBuffer));
-        lineBuffer = (char *)malloc(LINE_BUFFER_SIZE);
-        Serial.printf_P(PSTR("Allocated %d bytes for line buffer\n"), LINE_BUFFER_SIZE);
-        // Fill the buffer with space chars... because if we crash and dump buffer before it fills
-        // up, we want blank space not garbage! Nothing is null-terminated in this circular buffer.
+        printf("Allocated %d bytes for message log buffer\n", sizeof(logBuffer));
+        // lineBuffer = (char *)malloc(LINE_BUFFER_SIZE);
+        // printf("Allocated %d bytes for line buffer\n", LINE_BUFFER_SIZE);
+        //  Fill the buffer with space chars... because if we crash and dump buffer before it fills
+        //  up, we want blank space not garbage! Nothing is null-terminated in this circular buffer.
         memset(msgBuffer->buffer, 0x20, sizeof(msgBuffer->buffer));
         msgBuffer->wrapped = 0;
         msgBuffer->head = 0;
-        // Open logMessageFile so we don't have to later.
-        logMessageFile = (LittleFS.exists(CRASH_LOG_MSG_FILE)) ? LittleFS.open(CRASH_LOG_MSG_FILE, "r+") : LittleFS.open(CRASH_LOG_MSG_FILE, "w+");
-        Serial.printf_P(PSTR("Opened log message file, size: %d\n"), logMessageFile.size());
-        IRAM_END("Log buffers allocated");
     }
-
+    //xSemaphoreGive(mutexLogger);
     // parse the format string into lineBuffer
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf_P(lineBuffer, LINE_BUFFER_SIZE, fmt, args);
-    va_end(args);
-    // print line to the serial port
-    Serial.print(lineBuffer);
+    size_t len = vsnprintf(lineBuffer, LINE_BUFFER_SIZE, format, args);
     // copy the line into the message save buffer
-    size_t len = strlen(lineBuffer);
     size_t available = sizeof(msgBuffer->buffer) - msgBuffer->head;
-    memcpy(&msgBuffer->buffer[msgBuffer->head], lineBuffer, min(available, len));
+    memcpy(&msgBuffer->buffer[msgBuffer->head], lineBuffer, std::min(available, len));
     if (available < len)
     {
         // we wrapped on the available buffer space
@@ -150,7 +154,10 @@ void logToBuffer_P(const char *fmt, ...)
     }
     // send it to subscribed browsers
     SSEBroadcastState(lineBuffer, LOG_MESSAGE);
+#ifdef SYSLOG
     logToSyslog(lineBuffer);
+#endif
+    return rc; // return code from the system logger
 }
 
 #ifdef ENABLE_CRASH_LOG
@@ -171,67 +178,112 @@ void crashCallback()
 }
 #endif
 
-void printSavedLog(File file, Print &outputDev)
+void sendRebootLog(httpd_req_t *req)
 {
-    if (file && file.size() > 0)
+    std::ifstream file(REBOOT_LOG_MSG_FILE);
+    if (!file.is_open())
+        return;
+
+    ESP_LOGI(TAG, "Sending reboot log");
+    int num = LINE_BUFFER_SIZE;
+    char lineBuffer[LINE_BUFFER_SIZE];
+    while (num == LINE_BUFFER_SIZE)
     {
-        int num = LINE_BUFFER_SIZE;
-        file.seek(0, fs::SeekSet);
-        while (num == LINE_BUFFER_SIZE)
-        {
-            num = file.read((uint8_t *)lineBuffer, LINE_BUFFER_SIZE);
-            outputDev.write(lineBuffer, num);
-        }
-        outputDev.println();
+        file.read(lineBuffer, LINE_BUFFER_SIZE);
+        num = file.gcount();
+        httpd_resp_send_chunk(req, lineBuffer, num);
     }
+    httpd_resp_sendstr_chunk(req, "\n");
+    httpd_resp_send_chunk(req, NULL, 0);
+
+    file.close();
 }
 
-void printSavedLog(Print &outputDev)
+void sendCrashLog(httpd_req_t *req)
 {
-    return printSavedLog(logMessageFile, outputDev);
+    std::ifstream file(CRASH_LOG_MSG_FILE);
+    if (!file.is_open())
+        return;
+
+    ESP_LOGI(TAG, "Sending crash log");
+    int num = LINE_BUFFER_SIZE;
+    char lineBuffer[LINE_BUFFER_SIZE];
+    while (num == LINE_BUFFER_SIZE)
+    {
+        file.read(lineBuffer, LINE_BUFFER_SIZE);
+        num = file.gcount();
+        httpd_resp_send_chunk(req, lineBuffer, num);
+    }
+    httpd_resp_sendstr_chunk(req, "\n");
+    httpd_resp_send_chunk(req, NULL, 0);
+
+    file.close();
 }
 
-// These are defined in the linker script, and filled in by the elf2bin.py util
-extern "C" uint32_t __crc_len;
-extern "C" uint32_t __crc_val;
-// Memory stats
-extern "C" uint32_t free_heap;
-extern "C" uint32_t min_heap;
-
-void printMessageLog(Print &outputDev)
+void sendMessageLog(httpd_req_t *req)
 {
+    char lineBuffer[64];
 #ifdef NTP_CLIENT
     if (enableNTP && clockSet)
     {
-        outputDev.write("Server time (secs): ");
-        outputDev.println(time(NULL));
+        snprintf(lineBuffer, sizeof(lineBuffer), "Server time (secs): %lld\n", time(NULL));
+        httpd_resp_sendstr_chunk(req, lineBuffer);
     }
 #endif
-    outputDev.write("Server uptime (ms): ");
-    outputDev.println(millis());
-    outputDev.write("Firmware version: ");
-    outputDev.write(AUTO_VERSION);
-    outputDev.println();
-    outputDev.write("Flash CRC: 0x");
-    outputDev.println(__crc_val, 16);
-    outputDev.write("Flash length: ");
-    outputDev.println(__crc_len);
-    outputDev.write("Free heap: ");
-    outputDev.println(free_heap);
-    outputDev.write("Minimum heap: ");
-    outputDev.println(min_heap);
+    snprintf(lineBuffer, sizeof(lineBuffer), "Server uptime (ms): %lld\n", millis());
+    httpd_resp_sendstr_chunk(req, lineBuffer);
+    snprintf(lineBuffer, sizeof(lineBuffer), "Firmware version: %s\n", AUTO_VERSION);
+    httpd_resp_sendstr_chunk(req, lineBuffer);
+    snprintf(lineBuffer, sizeof(lineBuffer), "Free heap: %lu\n", esp_get_free_heap_size());
+    httpd_resp_sendstr_chunk(req, lineBuffer);
+    snprintf(lineBuffer, sizeof(lineBuffer), "Minimum heap: %lu\n", esp_get_minimum_free_heap_size());
+    httpd_resp_sendstr_chunk(req, lineBuffer);
 #if defined(MMU_IRAM_HEAP)
-    outputDev.write("IRAM heap size: ");
-    outputDev.println(MMU_SEC_HEAP_SIZE);
+    snprintf(lineBuffer, sizeof(lineBuffer), "IRAM heap size: %d\n", MMU_SEC_HEAP_SIZE);
+    httpd_resp_sendstr_chunk(req, lineBuffer);
 #endif
-    outputDev.println();
+    httpd_resp_sendstr_chunk(req, "\n");
     if (msgBuffer)
     {
         if (msgBuffer->wrapped != 0)
         {
-            outputDev.write(&msgBuffer->buffer[msgBuffer->head], sizeof(msgBuffer->buffer) - msgBuffer->head);
+            httpd_resp_send_chunk(req, &msgBuffer->buffer[msgBuffer->head], sizeof(msgBuffer->buffer) - msgBuffer->head);
         }
-        outputDev.write(msgBuffer->buffer, msgBuffer->head);
+        httpd_resp_send_chunk(req, msgBuffer->buffer, msgBuffer->head);
     }
+    httpd_resp_send_chunk(req, NULL, 0);
 }
+
+void saveMessageLog()
+{
+    std::ofstream file(REBOOT_LOG_MSG_FILE);
+    if (!file.is_open())
+        return;
+    ESP_LOGI(TAG, "Save reboot log");
+#ifdef NTP_CLIENT
+    if (enableNTP && clockSet)
+    {
+        file << "Server time (secs): " << time(NULL) << "\n";
+    }
+#endif
+    file << "Server uptime (ms): " << millis() << "\n";
+    file << "Firmware version: " << AUTO_VERSION << "\n";
+    file << "Free heap: " << esp_get_free_heap_size() << "\n";
+    file << "Minimum heap: " << esp_get_minimum_free_heap_size() << "\n";
+#if defined(MMU_IRAM_HEAP)
+    file << "IRAM heap size: " << MMU_SEC_HEAP_SIZE << "\n";
+#endif
+    file << "\n";
+    if (msgBuffer)
+    {
+        if (msgBuffer->wrapped != 0)
+        {
+            file.write(&msgBuffer->buffer[msgBuffer->head], sizeof(msgBuffer->buffer) - msgBuffer->head);
+        }
+        file.write(msgBuffer->buffer, msgBuffer->head);
+    }
+
+    file.close();
+}
+
 #endif // LOG_MSG_BUFFER
