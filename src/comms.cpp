@@ -38,7 +38,7 @@
 #include "comms.h"
 #include "web.h"
 #include "led.h"
-// #include "softuart.h"
+#include "softuart.h"
 
 #undef TAG
 static const char *TAG = "ratgdo-comms";
@@ -68,11 +68,13 @@ void (*TTC_Action)(void) = NULL;
 struct ForceRecover force_recover;
 #define force_recover_delay 3
 
+/*
 #define UART_BUF_SZ (256)
 #define UART_EVT_Q_SZ (8)
 static QueueHandle_t uart2_queue;
 uint8_t uartBuf[UART_BUF_SZ];
-
+*/
+QueueHandle_t serial_q;
 static QueueSetHandle_t commsQueue;
 
 /******************************* SECURITY 2.0 *********************************/
@@ -137,8 +139,7 @@ void manual_recovery();
 
 void comms_task_entry(void *ctx)
 {
-    printf("Stack 1: %d\n", uxTaskGetStackHighWaterMark(NULL));
-    uint32_t baudRate = 9600;
+    uint32_t baudRate;
 
     if (userConfig->getGDOSecurityType() == 1)
     {
@@ -153,9 +154,8 @@ void comms_task_entry(void *ctx)
     }
     else
     {
-        printf("Stack 1b: %d\n", uxTaskGetStackHighWaterMark(NULL));
         ESP_LOGI(TAG, "=== Setting up comms for Secuirty+2.0 protocol");
-
+        baudRate = 9600;
         // read from flash, default of 0 if file not exist
         id_code = nvRam->read("id_code");
         if (!id_code)
@@ -175,31 +175,30 @@ void comms_task_entry(void *ctx)
         save_rolling_code();
         ESP_LOGI(TAG, "rolling code %lu (0x%02lX)", rolling_code, rolling_code);
     }
-    printf("Stack 2: %d\n", uxTaskGetStackHighWaterMark(NULL));
 
     // Create packet queue
     pkt_q = xQueueCreate(5, sizeof(PacketAction));
-    printf("Stack 3: %d\n", uxTaskGetStackHighWaterMark(NULL));
 
-    // Initialize our serial port
-    uart_config_t uart_config = {};
-    uart_config.baud_rate = baudRate;
-    uart_config.data_bits = UART_DATA_8_BITS;
-    uart_config.parity = UART_PARITY_DISABLE;
-    uart_config.stop_bits = UART_STOP_BITS_1;
-    uart_config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
-    ESP_ERROR_CHECK(uart_param_config(UART_NUM_2, &uart_config));
-    ESP_ERROR_CHECK(uart_set_line_inverse(UART_NUM_2, UART_SIGNAL_RXD_INV | UART_SIGNAL_TXD_INV));
-    ESP_ERROR_CHECK(uart_set_pin(UART_NUM_2, UART_TX_PIN, UART_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
-    ESP_ERROR_CHECK(uart_driver_install(UART_NUM_2, UART_BUF_SZ, 0, UART_EVT_Q_SZ, &uart2_queue, 0));
-    //ESP_ERROR_CHECK(uart_set_mode(UART_NUM_2,UART_MODE_RS485_HALF_DUPLEX));
-    //ESP_ERROR_CHECK(uart_set_loop_back(UART_NUM_2, false));
-
+    serial_q = sw_serial->initialize(UART_RX_PIN, UART_TX_PIN, baudRate, true);
+    /*
+        // Initialize our serial port
+        uart_config_t uart_config = {};
+        uart_config.baud_rate = baudRate;
+        uart_config.data_bits = UART_DATA_8_BITS;
+        uart_config.parity = UART_PARITY_DISABLE;
+        uart_config.stop_bits = UART_STOP_BITS_1;
+        uart_config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
+        ESP_ERROR_CHECK(uart_param_config(UART_NUM_2, &uart_config));
+        ESP_ERROR_CHECK(uart_set_line_inverse(UART_NUM_2, UART_SIGNAL_RXD_INV | UART_SIGNAL_TXD_INV));
+        ESP_ERROR_CHECK(uart_set_pin(UART_NUM_2, UART_TX_PIN, UART_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+        ESP_ERROR_CHECK(uart_driver_install(UART_NUM_2, UART_BUF_SZ, 0, UART_EVT_Q_SZ, &uart2_queue, 0));
+        // ESP_ERROR_CHECK(uart_set_mode(UART_NUM_2,UART_MODE_RS485_HALF_DUPLEX));
+        // ESP_ERROR_CHECK(uart_set_loop_back(UART_NUM_2, false));
+    */
     commsQueue = xQueueCreateSet(16);
-    xQueueAddToSet(uart2_queue, commsQueue);
+    //    xQueueAddToSet(uart2_queue, commsQueue);
+    xQueueAddToSet(serial_q, commsQueue);
     xQueueAddToSet(pkt_q, commsQueue);
-
-    printf("Stack 4: %d\n", uxTaskGetStackHighWaterMark(NULL));
 
     if (userConfig->getGDOSecurityType() == 2)
     {
@@ -719,249 +718,242 @@ void comms_loop_sec2()
     }
     else
     {
-        // spin on receiving data until the whole packet has arrived
-        uart_event_t event = {};
-        if (xQueueReceive(uart2_queue, (void *)&event, 0) && (event.type == UART_DATA))
+        uint8_t ser_data;
+        sw_serial->read(&ser_data);
+        if (reader.push_byte(ser_data))
         {
-            uart_read_bytes(UART_NUM_2, uartBuf, event.size, portMAX_DELAY);
-            ESP_LOGI(TAG, "UART read %d bytes", event.size);
 
-            for (size_t i = 0; i < event.size; i++)
+            // We have a complete packet.
+            led->flash();
+            Packet pkt = Packet(reader.fetch_buf());
+            pkt.print();
+
+            switch (pkt.m_pkt_cmd)
             {
-                if (!reader.push_byte(uartBuf[i]))
-                    continue;
-
-                // We have a complete packet.
-                led->flash();
-                Packet pkt = Packet(reader.fetch_buf());
-                pkt.print();
-
-                switch (pkt.m_pkt_cmd)
+            case PacketCommand::Status:
+            {
+                GarageDoorCurrentState current_state = garage_door.current_state;
+                GarageDoorTargetState target_state = garage_door.target_state;
+                switch (pkt.m_data.value.status.door)
                 {
-                case PacketCommand::Status:
+                case DoorState::Open:
+                    current_state = CURR_OPEN;
+                    target_state = TGT_OPEN;
+                    break;
+                case DoorState::Closed:
+                    current_state = CURR_CLOSED;
+                    target_state = TGT_CLOSED;
+                    break;
+                case DoorState::Stopped:
+                    current_state = CURR_STOPPED;
+                    target_state = TGT_OPEN;
+                    break;
+                case DoorState::Opening:
+                    current_state = CURR_OPENING;
+                    target_state = TGT_OPEN;
+                    break;
+                case DoorState::Closing:
+                    current_state = CURR_CLOSING;
+                    target_state = TGT_CLOSED;
+                    break;
+                case DoorState::Unknown:
+                    ESP_LOGE(TAG, "Got door state unknown");
+                    break;
+                }
+
+                if ((current_state == CURR_CLOSING) && (TTCcountdown > 0))
                 {
-                    GarageDoorCurrentState current_state = garage_door.current_state;
-                    GarageDoorTargetState target_state = garage_door.target_state;
-                    switch (pkt.m_data.value.status.door)
+                    // We are in a time-to-close delay timeout, cancel the timeout
+                    ESP_LOGI(TAG, "Canceling time-to-close delay timer");
+                    // TTCtimer.detach();
+                    TTCcountdown = 0;
+                }
+
+                if (!garage_door.active)
+                {
+                    ESP_LOGI(TAG, "activating door");
+                    garage_door.active = true;
+                    notify_homekit_active();
+                    if (current_state == CURR_OPENING || current_state == CURR_OPEN)
                     {
-                    case DoorState::Open:
-                        current_state = CURR_OPEN;
                         target_state = TGT_OPEN;
-                        break;
-                    case DoorState::Closed:
-                        current_state = CURR_CLOSED;
-                        target_state = TGT_CLOSED;
-                        break;
-                    case DoorState::Stopped:
-                        current_state = CURR_STOPPED;
-                        target_state = TGT_OPEN;
-                        break;
-                    case DoorState::Opening:
-                        current_state = CURR_OPENING;
-                        target_state = TGT_OPEN;
-                        break;
-                    case DoorState::Closing:
-                        current_state = CURR_CLOSING;
-                        target_state = TGT_CLOSED;
-                        break;
-                    case DoorState::Unknown:
-                        ESP_LOGE(TAG, "Got door state unknown");
-                        break;
-                    }
-
-                    if ((current_state == CURR_CLOSING) && (TTCcountdown > 0))
-                    {
-                        // We are in a time-to-close delay timeout, cancel the timeout
-                        ESP_LOGI(TAG, "Canceling time-to-close delay timer");
-                        // TTCtimer.detach();
-                        TTCcountdown = 0;
-                    }
-
-                    if (!garage_door.active)
-                    {
-                        ESP_LOGI(TAG, "activating door");
-                        garage_door.active = true;
-                        notify_homekit_active();
-                        if (current_state == CURR_OPENING || current_state == CURR_OPEN)
-                        {
-                            target_state = TGT_OPEN;
-                        }
-                        else
-                        {
-                            target_state = TGT_CLOSED;
-                        }
-                    }
-
-                    ESP_LOGI(TAG, "tgt %d curr %d", target_state, current_state);
-
-                    if ((target_state != garage_door.target_state) ||
-                        (current_state != garage_door.current_state))
-                    {
-                        garage_door.target_state = target_state;
-                        garage_door.current_state = current_state;
-
-                        notify_homekit_current_door_state_change();
-                        notify_homekit_target_door_state_change();
-                    }
-
-                    if (pkt.m_data.value.status.light != garage_door.light)
-                    {
-                        ESP_LOGI(TAG, "Light Status %s", pkt.m_data.value.status.light ? "On" : "Off");
-                        garage_door.light = pkt.m_data.value.status.light;
-                        notify_homekit_light();
-                    }
-
-                    LockCurrentState current_lock;
-                    LockTargetState target_lock;
-                    if (pkt.m_data.value.status.lock)
-                    {
-                        current_lock = CURR_LOCKED;
-                        target_lock = TGT_LOCKED;
                     }
                     else
                     {
-                        current_lock = CURR_UNLOCKED;
-                        target_lock = TGT_UNLOCKED;
+                        target_state = TGT_CLOSED;
                     }
-                    if (current_lock != garage_door.current_lock)
-                    {
-                        garage_door.target_lock = target_lock;
-                        garage_door.current_lock = current_lock;
-                        notify_homekit_target_lock();
-                        notify_homekit_current_lock();
-                    }
-
-                    status_done = true;
-                    break;
                 }
 
-                case PacketCommand::Lock:
+                ESP_LOGI(TAG, "tgt %d curr %d", target_state, current_state);
+
+                if ((target_state != garage_door.target_state) ||
+                    (current_state != garage_door.current_state))
                 {
-                    LockTargetState lock = garage_door.target_lock;
-                    switch (pkt.m_data.value.lock.lock)
+                    garage_door.target_state = target_state;
+                    garage_door.current_state = current_state;
+
+                    notify_homekit_current_door_state_change();
+                    notify_homekit_target_door_state_change();
+                }
+
+                if (pkt.m_data.value.status.light != garage_door.light)
+                {
+                    ESP_LOGI(TAG, "Light Status %s", pkt.m_data.value.status.light ? "On" : "Off");
+                    garage_door.light = pkt.m_data.value.status.light;
+                    notify_homekit_light();
+                }
+
+                LockCurrentState current_lock;
+                LockTargetState target_lock;
+                if (pkt.m_data.value.status.lock)
+                {
+                    current_lock = CURR_LOCKED;
+                    target_lock = TGT_LOCKED;
+                }
+                else
+                {
+                    current_lock = CURR_UNLOCKED;
+                    target_lock = TGT_UNLOCKED;
+                }
+                if (current_lock != garage_door.current_lock)
+                {
+                    garage_door.target_lock = target_lock;
+                    garage_door.current_lock = current_lock;
+                    notify_homekit_target_lock();
+                    notify_homekit_current_lock();
+                }
+
+                status_done = true;
+                break;
+            }
+
+            case PacketCommand::Lock:
+            {
+                LockTargetState lock = garage_door.target_lock;
+                switch (pkt.m_data.value.lock.lock)
+                {
+                case LockState::Off:
+                    lock = TGT_UNLOCKED;
+                    break;
+                case LockState::On:
+                    lock = TGT_LOCKED;
+                    break;
+                case LockState::Toggle:
+                    if (lock == TGT_LOCKED)
                     {
-                    case LockState::Off:
                         lock = TGT_UNLOCKED;
-                        break;
-                    case LockState::On:
+                    }
+                    else
+                    {
                         lock = TGT_LOCKED;
-                        break;
-                    case LockState::Toggle:
-                        if (lock == TGT_LOCKED)
-                        {
-                            lock = TGT_UNLOCKED;
-                        }
-                        else
-                        {
-                            lock = TGT_LOCKED;
-                        }
-                        break;
                     }
-                    if (lock != garage_door.target_lock)
-                    {
-                        ESP_LOGI(TAG, "Lock Cmd %d", lock);
-                        garage_door.target_lock = lock;
-                        notify_homekit_target_lock();
-                        if (motionTriggers.bit.lockKey)
-                        {
-                            garage_door.motion_timer = millis() + 5000;
-                            garage_door.motion = true;
-                            notify_homekit_motion();
-                        }
-                    }
-                    // Send a get status to make sure we are in sync
-                    send_get_status();
                     break;
                 }
-
-                case PacketCommand::Light:
+                if (lock != garage_door.target_lock)
                 {
-                    bool l = garage_door.light;
-                    manual_recovery();
-                    switch (pkt.m_data.value.light.light)
-                    {
-                    case LightState::Off:
-                        l = false;
-                        break;
-                    case LightState::On:
-                        l = true;
-                        break;
-                    case LightState::Toggle:
-                    case LightState::Toggle2:
-                        l = !garage_door.light;
-                        break;
-                    }
-                    if (l != garage_door.light)
-                    {
-                        ESP_LOGI(TAG, "Light Cmd %s", l ? "On" : "Off");
-                        garage_door.light = l;
-                        notify_homekit_light();
-                        if (motionTriggers.bit.lightKey)
-                        {
-                            garage_door.motion_timer = millis() + 5000;
-                            garage_door.motion = true;
-                            notify_homekit_motion();
-                        }
-                    }
-                    // Send a get status to make sure we are in sync
-                    // Should really only need to do this on a toggle,
-                    // But safer to do it always
-                    send_get_status();
-                    break;
-                }
-
-                case PacketCommand::Motion:
-                {
-                    ESP_LOGI(TAG, "Motion Detected");
-                    // We got a motion message, so we know we have a motion sensor
-                    // If it's not yet enabled, add the service
-                    if (!garage_door.has_motion_sensor)
-                    {
-                        ESP_LOGI(TAG, "Detected new Motion Sensor. Enabling Service");
-                        garage_door.has_motion_sensor = true;
-                        motionTriggers.bit.motion = 1;
-                        userConfig->set(cfg_motionTriggers, motionTriggers.asInt);
-                        userConfig->save();
-                        // Only reboot if we had not already other motionTriggers (which would have enabled service already)
-                        enable_service_homekit_motion(motionTriggers.asInt == 1);
-                    }
-
-                    /* When we get the motion detect message, notify HomeKit. Motion sensor
-                        will continue to send motion messages every 5s until motion stops.
-                        set a timer for 5 seconds to disable motion after the last message */
-                    garage_door.motion_timer = millis() + 5000;
-                    if (!garage_door.motion)
-                    {
-                        garage_door.motion = true;
-                        notify_homekit_motion();
-                    }
-                    // Update status because things like light may have changed states
-                    send_get_status();
-                    break;
-                }
-
-                case PacketCommand::DoorAction:
-                {
-                    ESP_LOGI(TAG, "Door Action");
-                    if (pkt.m_data.value.door_action.pressed)
-                    {
-                        manual_recovery();
-                    }
-                    if (pkt.m_data.value.door_action.pressed && motionTriggers.bit.doorKey)
+                    ESP_LOGI(TAG, "Lock Cmd %d", lock);
+                    garage_door.target_lock = lock;
+                    notify_homekit_target_lock();
+                    if (motionTriggers.bit.lockKey)
                     {
                         garage_door.motion_timer = millis() + 5000;
                         garage_door.motion = true;
                         notify_homekit_motion();
                     }
+                }
+                // Send a get status to make sure we are in sync
+                send_get_status();
+                break;
+            }
+
+            case PacketCommand::Light:
+            {
+                bool l = garage_door.light;
+                manual_recovery();
+                switch (pkt.m_data.value.light.light)
+                {
+                case LightState::Off:
+                    l = false;
                     break;
+                case LightState::On:
+                    l = true;
+                    break;
+                case LightState::Toggle:
+                case LightState::Toggle2:
+                    l = !garage_door.light;
+                    break;
+                }
+                if (l != garage_door.light)
+                {
+                    ESP_LOGI(TAG, "Light Cmd %s", l ? "On" : "Off");
+                    garage_door.light = l;
+                    notify_homekit_light();
+                    if (motionTriggers.bit.lightKey)
+                    {
+                        garage_door.motion_timer = millis() + 5000;
+                        garage_door.motion = true;
+                        notify_homekit_motion();
+                    }
+                }
+                // Send a get status to make sure we are in sync
+                // Should really only need to do this on a toggle,
+                // But safer to do it always
+                send_get_status();
+                break;
+            }
+
+            case PacketCommand::Motion:
+            {
+                ESP_LOGI(TAG, "Motion Detected");
+                // We got a motion message, so we know we have a motion sensor
+                // If it's not yet enabled, add the service
+                if (!garage_door.has_motion_sensor)
+                {
+                    ESP_LOGI(TAG, "Detected new Motion Sensor. Enabling Service");
+                    garage_door.has_motion_sensor = true;
+                    motionTriggers.bit.motion = 1;
+                    userConfig->set(cfg_motionTriggers, motionTriggers.asInt);
+                    userConfig->save();
+                    // Only reboot if we had not already other motionTriggers (which would have enabled service already)
+                    enable_service_homekit_motion(motionTriggers.asInt == 1);
                 }
 
-                default:
-                    ESP_LOGI(TAG, "Support for %s packet unimplemented. Ignoring.", PacketCommand::to_string(pkt.m_pkt_cmd));
-                    break;
+                /* When we get the motion detect message, notify HomeKit. Motion sensor
+                    will continue to send motion messages every 5s until motion stops.
+                    set a timer for 5 seconds to disable motion after the last message */
+                garage_door.motion_timer = millis() + 5000;
+                if (!garage_door.motion)
+                {
+                    garage_door.motion = true;
+                    notify_homekit_motion();
                 }
+                // Update status because things like light may have changed states
+                send_get_status();
+                break;
+            }
+
+            case PacketCommand::DoorAction:
+            {
+                ESP_LOGI(TAG, "Door Action");
+                if (pkt.m_data.value.door_action.pressed)
+                {
+                    manual_recovery();
+                }
+                if (pkt.m_data.value.door_action.pressed && motionTriggers.bit.doorKey)
+                {
+                    garage_door.motion_timer = millis() + 5000;
+                    garage_door.motion = true;
+                    notify_homekit_motion();
+                }
+                break;
+            }
+
+            default:
+                ESP_LOGI(TAG, "Support for %s packet unimplemented. Ignoring.", PacketCommand::to_string(pkt.m_pkt_cmd));
+                break;
             }
         }
+        //  }
     }
 
     // Save rolling code if we have exceeded max limit.
@@ -1048,8 +1040,22 @@ bool transmitSec2(PacketAction &pkt_ac)
     {
         // sw_serial->transmit(buf, SECPLUS2_CODE_LEN);
         ESP_LOGI(TAG, "Send packet");
+        if (!sw_serial->transmit(buf, SECPLUS2_CODE_LEN))
+        {
+            ESP_LOGE(TAG, "failed to write packet");
+            return false;
+        }
+        /*
+        ESP_ERROR_CHECK(gpio_set_intr_type(UART_RX_PIN, GPIO_INTR_DISABLE));
+        // inverted logic, so this pulls the bus low to assert it
+        gpio_set_level(UART_TX_PIN, true);
+        ets_delay_us(1300);
+        gpio_set_level(UART_TX_PIN, false);
+        ets_delay_us(130);
         uart_write_bytes(UART_NUM_2, (const char *)buf, SECPLUS2_CODE_LEN);
-        // uart_wait_tx_done(UART_NUM_2, 100);
+        ESP_ERROR_CHECK(uart_wait_tx_done(UART_NUM_2, 100));
+        ESP_ERROR_CHECK(gpio_set_intr_type(UART_RX_PIN, GPIO_INTR_ANYEDGE));
+        */
         ESP_LOGI(TAG, "Send packet done");
     }
 

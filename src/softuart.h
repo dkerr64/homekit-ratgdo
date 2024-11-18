@@ -84,13 +84,12 @@ public:
     SoftUart(const SoftUart &obj) = delete;
     static SoftUart *getInstance() { return instancePtr; }
 
-    bool initialize(gpio_num_t rx_pin, gpio_num_t tx_pin, uint32_t speed, bool invert = false, bool one_wire = false);
+    QueueHandle_t initialize(gpio_num_t rx_pin, gpio_num_t tx_pin, uint32_t speed, bool invert = false, bool one_wire = false);
     bool transmit(uint8_t bytebuf[], size_t len);
     bool transmit(uint8_t byte) { return transmit(&byte, 1); };
     bool available(void) { return uxQueueMessagesWaiting(rx_q) > 0; }
     bool read(uint8_t *out) { return xQueueReceive(rx_q, out, 0); }
     void process_isr(ISREvent &e);
-    gptimer_handle_t getTimer() { return gptimer; };
 };
 
 extern SoftUart *sw_serial;

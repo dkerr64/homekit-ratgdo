@@ -158,16 +158,10 @@ void rx_isr_handler_entry(SoftUart *uart)
 
 IRAM_ATTR void handle_rx_edge(SoftUart *uart)
 {
-#ifdef ISR_DEBUG
-    gpio_set_level(GPIO_NUM_16, true);
-#endif
     ISREvent e = {
         esp_timer_get_time(),
         gpio_get_level(uart->rx_pin)};
     xQueueSendToBackFromISR(uart->rx_isr_q, &e, NULL);
-#ifdef ISR_DEBUG
-    gpio_set_level(GPIO_NUM_16, false);
-#endif
 }
 
 SoftUart::SoftUart()
@@ -175,7 +169,7 @@ SoftUart::SoftUart()
     ESP_LOGI(TAG, "Constructor for SoftUart");
 }
 
-bool SoftUart::initialize(gpio_num_t rx_pin, gpio_num_t tx_pin, uint32_t speed, bool invert, bool one_wire)
+QueueHandle_t SoftUart::initialize(gpio_num_t rx_pin, gpio_num_t tx_pin, uint32_t speed, bool invert, bool one_wire)
 {
     ESP_LOGI(TAG, "Initialize SoftUart RX pin: %d, TX pin: %d, Speed: %ld, Invert: %d, One-wire: %d", rx_pin, tx_pin, speed, invert, one_wire);
     SoftUart::rx_pin = rx_pin;
@@ -198,7 +192,7 @@ bool SoftUart::initialize(gpio_num_t rx_pin, gpio_num_t tx_pin, uint32_t speed, 
     }
 
     rx_isr_q = xQueueCreate(ISR_Q_BUF_SZ, sizeof(ISREvent));
-    if (!rx_q)
+    if (!rx_isr_q)
     {
         ESP_LOGE(TAG, "could not create rx isr queue. panicking!");
         abort();
@@ -218,8 +212,13 @@ bool SoftUart::initialize(gpio_num_t rx_pin, gpio_num_t tx_pin, uint32_t speed, 
         abort();
     }
 
-    // install gpio isr service
-    ESP_ERROR_CHECK(gpio_install_isr_service(0));
+    xTaskCreate(
+        reinterpret_cast<void (*)(void *)>(rx_isr_handler_entry),
+        RX_ISR_TASK_NAME,
+        RX_ISR_TASK_STK_SZ,
+        this,
+        RX_ISR_TASK_PRIO,
+        &rx_task);
 
     // Calculate bit_time
     bit_time_us = (1000000 / speed);
@@ -237,16 +236,24 @@ bool SoftUart::initialize(gpio_num_t rx_pin, gpio_num_t tx_pin, uint32_t speed, 
     ESP_ERROR_CHECK(gpio_set_direction(tx_pin, GPIO_MODE_OUTPUT_OD));
     ESP_ERROR_CHECK(gpio_set_pull_mode(tx_pin, GPIO_PULLUP_ONLY));
 
-#ifdef ISR_DEBUG
-    gpio_set_direction(GPIO_NUM_16, GPIO_MODE_OUTPUT);
-    gpio_set_pull_mode(GPIO_NUM_16, GPIO_PULLUP_ONLY);
-#endif
+    // install gpio isr service
+    ESP_ERROR_CHECK(gpio_install_isr_service(0));
 
     // IDLE high
     ESP_ERROR_CHECK(gpio_set_level(tx_pin, !invert));
 
     // set up the hardware timer, readying it for activation
     ESP_LOGI(TAG, "Setting up hw_timer for %luus", bit_time_us);
+    /*
+        hw_timer_init(handle_tx, (void *)this);
+        hw_timer_set_clkdiv(TIMER_CLKDIV_16);
+        hw_timer_set_intr_type(TIMER_EDGE_INT);
+
+        uint32_t hw_timer_load_data = ((TIMER_BASE_CLK >> hw_timer_get_clkdiv()) / 1000000) * bit_time_us;
+        ESP_LOGD(TAG, "hw_timer_load_data is %lu", hw_timer_load_data);
+        hw_timer_set_load_data(hw_timer_load_data);
+        hw_timer_set_reload(true);
+    */
 
     gptimer_config_t timer_config = {
         .clk_src = GPTIMER_CLK_SRC_DEFAULT,
@@ -263,49 +270,31 @@ bool SoftUart::initialize(gpio_num_t rx_pin, gpio_num_t tx_pin, uint32_t speed, 
     gptimer_event_callbacks_t cbs = {
         .on_alarm = handle_tx,
     };
-
     gptimer_alarm_config_t alarm_config = {
-        .alarm_count = bit_time_us, // period = 500mss @resolution 1MHz
-        .reload_count = 0,          // counter will reload with 0 on alarm event
+        .alarm_count = bit_time_us,
+        .reload_count = 0,
         .flags = {
-            .auto_reload_on_alarm = true, // enable auto-reload
+            .auto_reload_on_alarm = true,
         },
     };
-
     ESP_ERROR_CHECK(gptimer_set_alarm_action(gptimer, &alarm_config));
     ESP_ERROR_CHECK(gptimer_register_event_callbacks(gptimer, &cbs, (void *)this));
     ESP_LOGI(TAG, "Enable timer: 0x%08X", (int)gptimer);
     ESP_ERROR_CHECK(gptimer_enable(gptimer));
 
-    /*
-        hw_timer_init(handle_tx, (void *)this);
-        hw_timer_set_clkdiv(TIMER_CLKDIV_16);
-        hw_timer_set_intr_type(TIMER_EDGE_INT);
-
-        uint32_t hw_timer_load_data = ((TIMER_BASE_CLK >> hw_timer_get_clkdiv()) / 1000000) * bit_time_us;
-        ESP_LOGD(TAG, "hw_timer_load_data is %lu", hw_timer_load_data);
-        hw_timer_set_load_data(hw_timer_load_data);
-        hw_timer_set_reload(true);
-    */
     // Setup the interrupt handler to get edges
     ESP_LOGI(TAG, "setting up gpio intr for pin %d", rx_pin);
     ESP_ERROR_CHECK(gpio_set_intr_type(rx_pin, GPIO_INTR_ANYEDGE));
     ESP_ERROR_CHECK(gpio_isr_handler_add(rx_pin, reinterpret_cast<void (*)(void *)>(handle_rx_edge), (void *)this));
 
     ESP_LOGI(TAG, "Create ISR handler task");
-    xTaskCreate(
-        reinterpret_cast<void (*)(void *)>(rx_isr_handler_entry),
-        RX_ISR_TASK_NAME,
-        RX_ISR_TASK_STK_SZ,
-        this,
-        RX_ISR_TASK_PRIO,
-        &rx_task);
-    return true;
+
+    return rx_q;
 };
 
 bool SoftUart::transmit(uint8_t bytebuf[], size_t len)
 {
-    ESP_LOGD(TAG, "sending %d bytes", len);
+    ESP_LOGI(TAG, "sending %d bytes", len);
     if (tx_state == State::Idle)
     {
 

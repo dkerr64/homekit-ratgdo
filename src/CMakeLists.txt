@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "comms.cpp" "log.cpp" "MD5Builder.cpp" "web.cpp" "utilities.cpp" "homekit.cpp" "config.cpp" "ratgdo.cpp" "wifi.cpp" "led.cpp"
+    SRCS "softuart.cpp" "comms.cpp" "log.cpp" "MD5Builder.cpp" "web.cpp" "utilities.cpp" "homekit.cpp" "config.cpp" "ratgdo.cpp" "wifi.cpp" "led.cpp"
     INCLUDE_DIRS "." "./include"
     ${CMAKE_CURRENT_SOURCE_DIR}/../components/esp_littlefs/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../components/secplus/secplus/src
