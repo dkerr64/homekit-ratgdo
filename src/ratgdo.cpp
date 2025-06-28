@@ -85,10 +85,13 @@ extern "C" uint32_t __crc_val;
 // Track our memory usage
 uint32_t free_heap = 65535;
 uint32_t min_heap = 65535;
-unsigned long next_heap_check = 0;
+#ifdef MMU_IRAM_HEAP
+uint32_t free_iram = 65535;
+uint32_t min_iram = 65535;
+#endif
 
 bool status_done = false;
-unsigned long status_timeout;
+unsigned long status_start = 0;
 
 /********************************** MAIN LOOP CODE *****************************************/
 
@@ -132,7 +135,7 @@ void setup()
     led.idle();
     RINFO("=== RATGDO setup complete ===");
     RINFO("=============================");
-    status_timeout = millis() + 2000;
+    status_start = millis();
 }
 
 void loop()
@@ -152,7 +155,7 @@ void loop()
     {
         homekit_loop();
     }
-    else if (millis() > status_timeout)
+    else if (millis() - status_start > 2000)
     {
         RINFO("Status timeout, starting homekit");
         status_done = true;
@@ -265,8 +268,19 @@ void IRAM_ATTR isr_obstruction()
     obstruction_sensor.low_count++;
 }
 
+// Track if pin-based obstruction detection is working (make it globally accessible)
+bool pin_obstruction_available = true;
+static unsigned long last_pulse_time = 0;
+static bool pulse_detection_started = false;
+static const unsigned long NO_PULSE_TIMEOUT = 3000; // 3 seconds without pulses = switch to Pair3Resp
+
 void obstruction_timer()
 {
+    // Skip pin-based detection if we've determined it's not working
+    if (!pin_obstruction_available) {
+        return;
+    }
+    
     unsigned long current_millis = millis();
     static unsigned long last_millis = 0;
 
@@ -283,6 +297,13 @@ void obstruction_timer()
         // check to see if we got more then PULSES_LOWER_LIMIT pulses
         if (obstruction_sensor.low_count > PULSES_LOWER_LIMIT)
         {
+            // We're getting pulses, so pin detection is working
+            last_pulse_time = current_millis;
+            if (!pulse_detection_started) {
+                pulse_detection_started = true;
+                RINFO("Pin-based obstruction detection active");
+            }
+            
             // Only update if we are changing state
             if (garage_door.obstructed)
             {
@@ -329,6 +350,16 @@ void obstruction_timer()
 
         last_millis = current_millis;
         obstruction_sensor.low_count = 0;
+        
+        // Check if we haven't seen pulses for the timeout period
+        if (pulse_detection_started && (current_millis - last_pulse_time > NO_PULSE_TIMEOUT)) {
+            RINFO("Pin-based obstruction detection not working (no pulses for 3s), switching to Pair3Resp");
+            pin_obstruction_available = false;
+        } else if (!pulse_detection_started && current_millis > 5000) {
+            // If we haven't seen any pulses after 5 seconds, assume pin detection isn't working
+            RINFO("Pin-based obstruction detection not working, switching to Pair3Resp");
+            pin_obstruction_available = false;
+        }
     }
 }
 
@@ -352,23 +383,37 @@ void service_timer_loop()
     led.flash();
 
     // Motion Clear Timer
-    if (garage_door.motion && (current_millis > garage_door.motion_timer))
+    if (garage_door.motion && garage_door.motion_timer > 0 && (int32_t)(current_millis - garage_door.motion_timer) >= 0)
     {
         RINFO("Motion Cleared");
         garage_door.motion = false;
         notify_homekit_motion();
     }
 
-    // Check heap
-    if (current_millis > next_heap_check)
+    // Check heap (both regular and IRAM)
+    static unsigned long last_heap_check = 0;
+    if (current_millis - last_heap_check >= 1000)
     {
-        next_heap_check = current_millis + 1000;
+        last_heap_check = current_millis;
         free_heap = ESP.getFreeHeap();
         if (free_heap < min_heap)
         {
             min_heap = free_heap;
             RINFO("Free heap dropped to %d", min_heap);
         }
+        
+#ifdef MMU_IRAM_HEAP
+        // Also track IRAM heap usage
+        {
+            HeapSelectIram ephemeral;
+            free_iram = ESP.getFreeHeap();
+            if (free_iram < min_iram)
+            {
+                min_iram = free_iram;
+                RINFO("Free IRAM heap dropped to %d", min_iram);
+            }
+        }
+#endif
     }
 }
 
@@ -421,7 +466,7 @@ void LED::flash(unsigned long ms)
         digitalWrite(LED_BUILTIN, activeState);
         resetTime = millis() + ms;
     }
-    else if ((digitalRead(LED_BUILTIN) == activeState) && (millis() > resetTime))
+    else if ((digitalRead(LED_BUILTIN) == activeState) && resetTime > 0 && (int32_t)(millis() - resetTime) >= 0)
     {
         digitalWrite(LED_BUILTIN, idleState);
     }

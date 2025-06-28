@@ -67,10 +67,9 @@ struct GarageDoor
     LockTargetState target_lock;
 };
 
-struct ForceRecover
+struct __attribute__((aligned(4))) ForceRecover
 {
     uint8_t push_count;
-    unsigned long timeout;
 };
 
 class LED
@@ -94,6 +93,7 @@ public:
 };
 
 extern LED led;
+extern bool pin_obstruction_available;
 
 #define LOOP_SYSTEM 0
 #define LOOP_IMPROV 1
