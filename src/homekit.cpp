@@ -2,30 +2,15 @@
 // All rights reserved. GPLv3 License
 
 #include <arduino_homekit_server.h>
-#include "ratgdo.h"
-#include "comms.h"
-#include "log.h"
 #include <ESP8266WiFi.h>
-#include "utilities.h"
-#include "homekit_decl.h"
+
+#include "ratgdo.h"
+#include "config.h"
+#include "comms.h"
 #include "web.h"
 
 // Logger tag
 static const char *TAG = "ratgdo-homekit";
-
-// Bring in config and characteristics defined in homekit_decl.c
-extern "C" homekit_server_config_t config;
-extern "C" homekit_characteristic_t current_door_state;
-extern "C" homekit_characteristic_t target_door_state;
-extern "C" homekit_characteristic_t obstruction_detected;
-extern "C" homekit_characteristic_t active_state;
-extern "C" homekit_characteristic_t current_lock_state;
-extern "C" homekit_characteristic_t target_lock_state;
-extern "C" homekit_characteristic_t light_state;
-extern "C" homekit_characteristic_t motion_detected;
-
-// Bring in the garage door state storage in ratgdo.c
-extern GarageDoor garage_door;
 
 // Forward-declare setters used by characteristics
 homekit_value_t current_door_state_get();
@@ -39,14 +24,10 @@ void target_lock_state_set(const homekit_value_t new_value);
 homekit_value_t light_state_get();
 void light_state_set(const homekit_value_t value);
 
-// Make serial_number available
-extern "C" char serial_number[SERIAL_NAME_SIZE];
-
 /********************************** MAIN LOOP CODE *****************************************/
 
 void homekit_loop()
 {
-    loop_id = LOOP_HK;
     arduino_homekit_loop();
 }
 
@@ -67,13 +48,13 @@ void setup_homekit()
     light_state.getter = light_state_get;
     light_state.setter = light_state_set;
 
-    garage_door.has_motion_sensor = (bool)read_int_from_file("has_motion");
-    if (!garage_door.has_motion_sensor && (userConfig->motionTriggers == 0))
+    garage_door.has_motion_sensor = (bool)read_int_from_file(nvram_has_motion);
+    if (!garage_door.has_motion_sensor && (userConfig->getMotionTriggers() == 0))
     {
         ESP_LOGI(TAG, "Motion Sensor not detected.  Disabling Service");
         config.accessories[0]->services[3] = NULL;
     }
-    if (userConfig->gdoSecurityType == 3)
+    if (userConfig->getGDOSecurityType() == 3)
     {
         ESP_LOGI(TAG, "Dry contact does not support light control.  Disabling Service");
         config.accessories[0]->services[2] = NULL;
@@ -155,34 +136,80 @@ void target_lock_state_set(const homekit_value_t value)
     set_lock(value.uint8_value);
 }
 
-void notify_homekit_target_door_state_change()
+/****************************************************************************
+ * Garage Door Service Handler
+ */
+void notify_homekit_target_door_state_change(GarageDoorTargetState state)
 {
-    if (arduino_homekit_get_running_server())
+    garage_door.target_state = state;
+#ifdef ESP32
+    if (!isPaired)
+        return;
+
+    GDOEvent e;
+    e.c = door->target;
+    e.value.u = (uint8_t)garage_door.target_state;
+    queueSendHelper(door->event_q, e, "target door");
+#else
+    if (!arduino_homekit_get_running_server())
+        return;
+
+    homekit_characteristic_notify(&target_door_state, HOMEKIT_UINT8_CPP(garage_door.target_state));
+#endif
+}
+
+void notify_homekit_current_door_state_change(GarageDoorCurrentState state)
+{
+    garage_door.current_state = state;
+#ifdef ESP32
+    if (!isPaired)
+        return;
+
+    GDOEvent e;
+    e.c = door->current;
+    e.value.u = (uint8_t)garage_door.current_state;
+    queueSendHelper(door->event_q, e, "current door");
+#else
+    if (!arduino_homekit_get_running_server())
+        return;
+
+    homekit_characteristic_notify(&current_door_state, HOMEKIT_UINT8_CPP(garage_door.current_state));
+
+#define doorOpening() // Noop on ESP8266
+#define doorClosing() // Noop on ESP8266
+#endif
+    // Set target door state to match.
+    switch (state)
     {
-        homekit_characteristic_notify(
-            &target_door_state,
-            HOMEKIT_UINT8_CPP(garage_door.target_state));
+    case CURR_OPENING:
+        // #ifdef ESP32
+        doorOpening(); // Fall through...
+                       // #endif
+    case CURR_OPEN:
+        notify_homekit_target_door_state_change(TGT_OPEN);
+        break;
+
+    case CURR_CLOSING:
+        // #ifdef ESP32
+        doorClosing(); // Fall through...
+                       // #endif
+    case CURR_CLOSED:
+        notify_homekit_target_door_state_change(TGT_CLOSED);
+        break;
+
+    default:
+        // Ignore other states.
+        break;
     }
 }
 
-void notify_homekit_current_door_state_change()
-{
-    if (arduino_homekit_get_running_server())
-    {
-        homekit_characteristic_notify(
-            &current_door_state,
-            HOMEKIT_UINT8_CPP(garage_door.current_state));
-    }
-}
-
+#ifndef ESP32
 void notify_homekit_active()
 {
-    if (arduino_homekit_get_running_server())
-    {
-        homekit_characteristic_notify(
-            &active_state,
-            HOMEKIT_BOOL_CPP(true));
-    }
+    if (!arduino_homekit_get_running_server())
+        return;
+
+    homekit_characteristic_notify(&active_state, HOMEKIT_BOOL_CPP(true));
 }
 
 homekit_value_t light_state_get()
@@ -198,62 +225,127 @@ void light_state_set(const homekit_value_t value)
 
     set_light(value.bool_value);
 }
+#endif
 
-void notify_homekit_obstruction()
+void notify_homekit_target_lock(LockTargetState state)
 {
-    if (arduino_homekit_get_running_server())
-    {
-        homekit_characteristic_notify(
-            &obstruction_detected,
-            HOMEKIT_BOOL_CPP(garage_door.obstructed));
-    }
+    garage_door.target_lock = state;
+#ifdef ESP32
+    if (!isPaired)
+        return;
+
+    GDOEvent e;
+    e.c = door->lockTarget;
+    e.value.u = (uint8_t)garage_door.target_lock;
+    queueSendHelper(door->event_q, e, "target lock");
+#else
+    if (!arduino_homekit_get_running_server())
+        return;
+
+    homekit_characteristic_notify(&target_lock_state, HOMEKIT_UINT8_CPP(garage_door.target_lock));
+#endif
 }
 
-void notify_homekit_current_lock()
+void notify_homekit_current_lock(LockCurrentState state)
 {
-    if (arduino_homekit_get_running_server())
-    {
-        homekit_characteristic_notify(
-            &current_lock_state,
-            HOMEKIT_UINT8_CPP(garage_door.current_lock));
-    }
+    garage_door.current_lock = state;
+#ifdef ESP32
+    if (!isPaired)
+        return;
+
+    GDOEvent e;
+    e.c = door->lockCurrent;
+    e.value.u = (uint8_t)garage_door.current_lock;
+    queueSendHelper(door->event_q, e, "current lock");
+#else
+    if (!arduino_homekit_get_running_server())
+        return;
+
+    homekit_characteristic_notify(&current_lock_state, HOMEKIT_UINT8_CPP(garage_door.current_lock));
+#endif
 }
 
-void notify_homekit_target_lock()
+void notify_homekit_obstruction(bool state)
 {
-    if (arduino_homekit_get_running_server())
-    {
-        homekit_characteristic_notify(
-            &target_lock_state,
-            HOMEKIT_UINT8_CPP(garage_door.target_lock));
-    }
+    garage_door.obstructed = state;
+#ifdef ESP32
+    if (!isPaired)
+        return;
+
+    GDOEvent e;
+    e.c = door->obstruction;
+    e.value.b = garage_door.obstructed;
+    queueSendHelper(door->event_q, e, "obstruction");
+#else
+    if (!arduino_homekit_get_running_server())
+        return;
+
+    homekit_characteristic_notify(&obstruction_detected, HOMEKIT_BOOL_CPP(garage_door.obstructed));
+#endif
 }
 
-void notify_homekit_light()
+/****************************************************************************
+ * Light Service Handler
+ */
+void notify_homekit_light(bool state)
 {
-    if (arduino_homekit_get_running_server())
-    {
-        homekit_characteristic_notify(
-            &light_state,
-            HOMEKIT_BOOL_CPP(garage_door.light));
-    }
+    garage_door.light = state;
+#ifdef ESP32
+    if (!isPaired || !light)
+        return;
+
+    GDOEvent e;
+    e.value.b = garage_door.light;
+    queueSendHelper(light->event_q, e, "light");
+#else
+    if (!arduino_homekit_get_running_server())
+        return;
+
+    homekit_characteristic_notify(&light_state, HOMEKIT_BOOL_CPP(garage_door.light));
+#endif
 }
 
+/****************************************************************************
+ * Motion Service Handler
+ */
 void enable_service_homekit_motion(bool reboot)
 {
-    write_int_to_file("has_motion", 1);
+#ifdef ESP32
+    // only create if not already created
+    if (!garage_door.has_motion_sensor)
+    {
+        nvRam->write(nvram_has_motion, 1);
+        garage_door.has_motion_sensor = true;
+        createMotionAccessories();
+        if (reboot)
+        {
+            sync_and_restart();
+        }
+    }
+#else
+    write_int_to_file(nvram_has_motion, 1);
     if (reboot)
     {
         sync_and_restart();
     }
+#endif
 }
 
-void notify_homekit_motion()
+void notify_homekit_motion(bool state)
 {
-    if (arduino_homekit_get_running_server())
-    {
-        homekit_characteristic_notify(
-            &motion_detected,
-            HOMEKIT_BOOL_CPP(garage_door.motion));
-    }
+    garage_door.motion = state;
+    garage_door.motion_timer = (!state) ? 0 : _millis() + MOTION_TIMER_DURATION;
+#ifdef ESP32
+    if (!isPaired || !motion)
+        return;
+
+    GDOEvent e;
+    e.value.b = garage_door.motion;
+    queueSendHelper(motion->event_q, e, "motion");
+#else
+    if (!arduino_homekit_get_running_server())
+        return;
+
+    homekit_characteristic_notify(&motion_detected, HOMEKIT_BOOL_CPP(garage_door.motion));
+#endif
 }
