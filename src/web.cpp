@@ -331,6 +331,10 @@ void web_loop()
         // Have we added anything to the JSON string?
         ADD_INT(json, "upTime", upTime);
         END_JSON(json);
+        if (strlen(json) > LOOP_JSON_BUFFER_SIZE * 8 / 10)
+        {
+            ESP_LOGW(TAG, "WARNING web_loop JSON length: %d is over 80%% of available buffer", strlen(json));
+        }
         REMOVE_NL(json);
         SSEBroadcastState(json);
     }
@@ -655,6 +659,11 @@ void handle_status()
 
     // Build the JSON string
     START_JSON(json);
+#ifdef ESP8266
+    ADD_STR(json, "gitRepo", "homekit-ratgdo");
+#else
+    ADD_STR(json, "gitRepo", "homekit-ratgdo32");
+#endif
     ADD_INT(json, "upTime", upTime);
     ADD_STR(json, cfg_deviceName, userConfig->getDeviceName().c_str());
     ADD_STR(json, "userName", userConfig->getwwwUsername().c_str());
@@ -761,7 +770,14 @@ void handle_status()
     response_time = _millis() - startTime;
     json_cache_time = _millis();
     max_response_time = std::max(max_response_time, response_time);
-    ESP_LOGI(TAG, "JSON length: %d, time: %lums", strlen(json), response_time);
+    if (strlen(json) > STATUS_JSON_BUFFER_SIZE * 8 / 10)
+    {
+        ESP_LOGW(TAG, "WARNING status JSON length: %d is over 80%% of available buffer, time: %lums", strlen(json), response_time);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "JSON length: %d, time: %lums", strlen(json), response_time);
+    }
     GIVE_MUTEX();
     return;
 }
@@ -1066,6 +1082,10 @@ void SSEheartbeat(SSESubscription *s)
         }
 #endif
         END_JSON(json);
+        if (strlen(json) > LOOP_JSON_BUFFER_SIZE * 8 / 10)
+        {
+            ESP_LOGW(TAG, "WARNING heartbeat JSON length: %d is over 80%% of available buffer", strlen(json));
+        }
         REMOVE_NL(json);
         // retry needed to before event:
         s->client.printf("retry: 15000\nevent: message\ndata: %s\n\n", json);
@@ -1513,6 +1533,10 @@ void handle_firmware_upload()
                     START_JSON(json);
                     ADD_INT(json, "uploadPercent", uploadPercent);
                     END_JSON(json);
+                    if (strlen(json) > LOOP_JSON_BUFFER_SIZE * 8 / 10)
+                    {
+                        ESP_LOGW(TAG, "WARNING firmware upload JSON length: %d is over 80%% of available buffer", strlen(json));
+                    }
                     REMOVE_NL(json);
                     firmwareUpdateSub->client.printf_P(PSTR("event: uploadStatus\ndata: %s\n\n"), json);
                     GIVE_MUTEX();

@@ -19,6 +19,8 @@ var setGDOcmds = {              // setGDO commands that are not sent from server
     softAPmode: false,
     factoryReset: false,
 };
+var gitUser = "ratgdo";         // default git user.
+var gitRepo = "homekit-ratgdo"; // default git repository.
 
 // https://stackoverflow.com/questions/7995752/detect-desktop-browser-not-mobile-with-javascript
 // const isTouchDevice = function () { return 'ontouchstart' in window || 'onmsgesturechange' in window; };
@@ -208,6 +210,11 @@ function setElementsFromStatus(status) {
     let date = new Date();
     for (const [key, value] of Object.entries(status)) {
         switch (key) {
+            case "gitRepo":
+                gitRepo = value;
+                document.getElementById("docsLink").href = "https://github.com/" + gitUser + "/" + gitRepo;
+                document.getElementById("contribLink").href = "https://github.com/" + gitUser + "/" + gitRepo + "/graphs/contributors";
+                break;
             case "paired":
                 if (value) {
                     document.getElementById("unpair").value = "Un-pair HomeKit";
@@ -570,7 +577,7 @@ async function checkVersion(progress) {
     versionElem2.innerHTML = msg;
     const spanDots = document.getElementById(progress);
     const aniDots = dotDotDot(spanDots);
-    const response = await fetch("https://api.github.com/repos/ratgdo/homekit-ratgdo/releases", {
+    const response = await fetch("https://api.github.com/repos/" + gitUser + "/" + gitRepo + "/releases", {
         method: "GET",
         cache: "no-cache",
         redirect: "follow"
@@ -598,9 +605,9 @@ async function checkVersion(progress) {
     if (latest) {
         console.log("Newest version: " + latest.tag_name);
         const asset = latest.assets.find((obj) => {
-            return (obj.content_type === "application/octet-stream") && (obj.name.startsWith("homekit-ratgdo"));
+            return (obj.content_type === "application/octet-stream") && (obj.name.startsWith(gitRepo));
         });
-        serverStatus.downloadURL = "https://ratgdo.github.io/homekit-ratgdo/firmware/" + asset.name;
+        serverStatus.downloadURL = "https://ratgdo.github.io/" + gitRepo + "/firmware/" + asset.name;
         msg = "You have newest release";
         if (serverStatus.firmwareVersion < latest.tag_name) {
             // Newest version at GitHub is greater from that installed
