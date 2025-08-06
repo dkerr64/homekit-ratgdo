@@ -254,6 +254,7 @@ bool helperOccupancyDuration(const std::string &key, const std::string &value, c
 userSettings::userSettings()
 {
 #ifdef ESP8266
+    LittleFS.begin();
     snprintf(default_device_name, sizeof(default_device_name), "Garage Door %06X", ESP.getChipId());
 #else
     mutex = xSemaphoreCreateMutex(); // need to serialize set's

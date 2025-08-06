@@ -571,7 +571,8 @@ void handle_everything()
     // Connection throttling
     if (!registerRequest())
     {
-        server.send(503, "text/plain", "Server too busy, please try again");
+        server.send(503, type_txt, response503);
+        ESP_LOGW(TAG,"Reject request, server too busy (handle_everything)");
         return;
     }
 
@@ -770,9 +771,9 @@ void handle_status()
     response_time = _millis() - startTime;
     json_cache_time = _millis();
     max_response_time = std::max(max_response_time, response_time);
-    if (strlen(json) > STATUS_JSON_BUFFER_SIZE * 8 / 10)
+    if (strlen(json) > STATUS_JSON_BUFFER_SIZE * 85 / 100)
     {
-        ESP_LOGW(TAG, "WARNING status JSON length: %d is over 80%% of available buffer, time: %lums", strlen(json), response_time);
+        ESP_LOGW(TAG, "WARNING status JSON length: %d is over 85%% of available buffer, time: %lums", strlen(json), response_time);
     }
     else
     {
@@ -1229,7 +1230,7 @@ void handle_subscribe()
     if (channel >= SSE_MAX_CHANNELS)
     {
         ESP_LOGI(TAG, "SSE subscription failed - no free slots available");
-        server.send(503, "text/plain", "No free subscription slots available");
+        server.send(503, type_txt, "No free subscription slots available");
         return;
     }
 
@@ -1238,7 +1239,7 @@ void handle_subscribe()
     if (!client || !client.connected())
     {
         ESP_LOGI(TAG, "Invalid client for SSE subscription");
-        server.send(400, "text/plain", "Invalid client connection");
+        server.send(400, type_txt, "Invalid client connection");
         return;
     }
 
@@ -1251,7 +1252,7 @@ void handle_subscribe()
         if (hbi < 0 || hbi > 60)
         {
             ESP_LOGI(TAG, "Invalid client for SSE subscription");
-            server.send(400, "text/plain", "Invalid heartbeat interval (0 - 60)");
+            server.send(400, type_txt, "Invalid heartbeat interval (0 - 60)");
             return;
         }
         else
@@ -1418,7 +1419,7 @@ void handle_update()
         // TODO how to handle firmware upload failure on ESP32?
 #endif
         ESP_LOGE(TAG, "Firmware upload error. Aborting update, not rebooting");
-        server.send(400, "text/plain", _updaterError.c_str());
+        server.send(400, type_txt, _updaterError.c_str());
         return;
     }
 

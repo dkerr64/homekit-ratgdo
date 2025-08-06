@@ -1,5 +1,5 @@
 /****************************************************************************
- * RATGDO HomeKit for ESP32
+ * RATGDO HomeKit
  * https://ratcloud.llc
  * https://github.com/PaulWieland/ratgdo
  *
@@ -66,8 +66,10 @@ Queue_t pkt_q;
 SoftwareSerial sw_serial;
 #endif // not USE_GDOLIB
 
-extern struct GarageDoor garage_door;
-extern bool status_done;
+#define SECPLUS1_DIGITAL_WALLPLATE_TIMEOUT 15000
+#define COMMS_STATUS_TIMEOUT 2000
+bool comms_status_done = false;
+_millis_t comms_status_start = 0;
 
 uint32_t doorControlType = 0;
 
@@ -539,6 +541,7 @@ void setup_comms()
     attachInterrupt(INPUT_OBST_PIN, isr_obstruction, FALLING);
 #endif
     comms_setup_done = true;
+    comms_status_start = _millis();
 }
 
 /****************************************************************************
@@ -610,7 +613,7 @@ void wallPlate_Emulation()
     }
 
     // wait up to 15 seconds to look for an existing wallplate or it could be booting, so need to wait
-    if (currentMillis - serialDetected < 15000 || wallplateBooting == true)
+    if (currentMillis - serialDetected < SECPLUS1_DIGITAL_WALLPLATE_TIMEOUT || wallplateBooting == true)
     {
         if (currentMillis - lastRequestMillis > 1000)
         {
@@ -930,6 +933,7 @@ void comms_loop_sec1()
                         l = "Unknown";
                         break;
                     }
+                    comms_status_done = true;
                     ESP_LOGI(TAG, "status DOOR: %s", l);
                     notify_homekit_current_door_state_change(gd_currentstate);
                 }
@@ -1296,7 +1300,7 @@ void comms_loop_sec2()
                     }
                 }
 
-                status_done = true;
+                comms_status_done = true;
                 break;
             }
 
@@ -1530,6 +1534,17 @@ void comms_loop()
 {
     if (!comms_setup_done)
         return;
+
+    // wait for a status command to be processes to properly set the initial state of
+    // all homekit characteristics.  Also timeout if we don't receive a status in
+    // a reasonable amount of time.  This prevents unintentional state changes if
+    // a home hub reads the state before we initialize everything
+    // Note, secplus1 doesnt have a status command so it will just timeout
+    if (!comms_status_done && (_millis() - comms_status_start > COMMS_STATUS_TIMEOUT))
+    {
+        ESP_LOGI(TAG, "Comms initial status timeout");
+        comms_status_done = true;
+    }
 
 #ifdef USE_GDOLIB
     // Room Occupancy Clear Timer

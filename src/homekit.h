@@ -1,5 +1,5 @@
 /****************************************************************************
- * RATGDO HomeKit for ESP32
+ * RATGDO HomeKit
  * https://ratcloud.llc
  * https://github.com/PaulWieland/ratgdo
  *
@@ -32,6 +32,8 @@ extern void notify_homekit_motion(bool state);
 // On ESP8266 we have our own HomeKit module
 void homekit_loop();
 extern void notify_homekit_active();
+extern bool homekit_setup_done;
+
 #else
 // One ESP32 we use HomeSpan module.
 // Accessory IDs

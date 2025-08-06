@@ -17,13 +17,13 @@
  *
  * Portions of this code written by Jonathas Barbosa <jnths@gmail.com>, and adapted from
  *   https://github.com/jnthas/improv-wifi-demo
- * 
+ *
  * Contributions acknowledged from
  * Brandon Matthews... https://github.com/thenewwazoo
  * Jonathan Stroud...  https://github.com/jgstroud
  *
  */
- #ifdef ESP8266
+#ifdef ESP8266
 // This whole file only applies for ESP8266.
 // On ESP32, WiFi is handled by the HomeSpan library
 
@@ -40,6 +40,9 @@
 
 // Logger tag
 static const char *TAG = "ratgdo-wifi";
+
+static bool wifi_setup_done = false;
+bool wifi_got_ip = false;
 
 // support for changeing WiFi settings
 _millis_t wifiConnectStart = 0;
@@ -67,13 +70,14 @@ void onDisconnected(const WiFiEventStationModeDisconnected &evt)
 
 void onGotIP(const WiFiEventStationModeGotIP &evt)
 {
+    wifi_got_ip = true;
     userConfig->set(cfg_localIP, evt.ip.toString().c_str());
     userConfig->set(cfg_gatewayIP, evt.gw.toString().c_str());
     userConfig->set(cfg_subnetMask, evt.mask.toString().c_str());
     userConfig->set(cfg_nameserverIP, (WiFi.dnsIP().isSet()) ? WiFi.dnsIP().toString().c_str() : evt.gw.toString().c_str());
-    ESP8266_SAVE_CONFIG();
     ESP_LOGI(TAG, "WiFi Got IP: %s, Mask: %s, Gateway: %s, DNS: %s", userConfig->getLocalIP().c_str(), userConfig->getSubnetMask().c_str(),
              userConfig->getGatewayIP().c_str(), userConfig->getNameserverIP().c_str());
+    ESP8266_SAVE_CONFIG();
 }
 
 void onDHCPTimeout()
@@ -83,6 +87,9 @@ void onDHCPTimeout()
 
 void wifi_connect()
 {
+    if (wifi_setup_done)
+        return;
+
     ESP_LOGI(TAG, "=== Initialize WiFi %s", (softAPmode) ? "Soft Access Point" : "Station");
     IRAM_START
     // IRAM heap is used only for allocating globals, to leave as much regular heap
@@ -179,6 +186,7 @@ void wifi_connect()
     wifiConnectActive = true;
     WiFi.begin(); // use credentials stored in flash
     IRAM_END("Wifi initialized");
+    wifi_setup_done = true;
 }
 
 void wifi_loop()

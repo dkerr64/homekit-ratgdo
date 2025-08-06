@@ -132,6 +132,7 @@ void panic_handler(arduino_panic_info_t *info, void *arg)
 LOG::LOG()
 {
 #ifdef ESP8266
+    LittleFS.begin();
     IRAM_START
     // IRAM heap is used only for allocating globals, to leave as much regular heap
     // available during operations.  We need to carefully monitor useage so as not

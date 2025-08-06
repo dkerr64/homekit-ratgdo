@@ -31,3 +31,4 @@ extern void reset_door();
 
 extern uint32_t doorControlType;
 extern GarageDoorCurrentState doorState;
+extern bool comms_status_done;

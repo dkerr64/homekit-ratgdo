@@ -12,6 +12,8 @@
 // Logger tag
 static const char *TAG = "ratgdo-homekit";
 
+bool homekit_setup_done = false;
+
 // Forward-declare setters used by characteristics
 homekit_value_t current_door_state_get();
 homekit_value_t target_door_state_get();
@@ -28,11 +30,17 @@ void light_state_set(const homekit_value_t value);
 
 void homekit_loop()
 {
+    if (!homekit_setup_done && !comms_status_done)
+        return;
+
     arduino_homekit_loop();
 }
 
 void setup_homekit()
 {
+    if (homekit_setup_done || softAPmode)
+        return;
+
     ESP_LOGI(TAG, "=== Starting HomeKit Server");
     String macAddress = WiFi.macAddress();
     snprintf(serial_number, SERIAL_NAME_SIZE, "%s", macAddress.c_str());
@@ -67,6 +75,7 @@ void setup_homekit()
     IRAM_START
     // Doing a IRAM start/end just to log free memory
     IRAM_END("HomeKit server started");
+    homekit_setup_done = true;
 }
 
 /******************************** GETTERS AND SETTERS ***************************************/

@@ -81,15 +81,24 @@ uint32_t free_iram = (1024 * 1024);
 uint32_t min_iram = (1024 * 1024);
 #endif // MMU_IRAM_HEAP
 _millis_t next_heap_check = 0;
-_millis_t status_start = 0;
-bool status_done = false;
+#define MIN_FREE_HEAP (1024 * 4)
+#define FREE_HEAP_CHECK_MS 1000
 
+// Forward declare functions
 void service_timer_loop();
 
 // support for changeing WiFi settings
 #define WIFI_CONNECT_TIMEOUT (30 * 1000)
 static _millis_t wifiConnectTimeout = 0;
-#ifndef ESP8266
+
+#ifdef ESP8266
+Ticker watchdogTicker;
+void IRAM_ATTR watchdogReset()
+{
+    ESP.wdtFeed();
+}
+
+#else
 // on ESP8266 ping is implemented in wifi.cpp
 static bool ping_failure = false;
 static bool ping_timed_out = false;
@@ -113,26 +122,24 @@ void setup()
     disable_extra4k_at_link_time();
 #else
     esp_core_dump_init();
+    // No buzzer on ESP8266
+    tone(BEEPER_PIN, 1300, 500);
 #endif // ESP32
+    led.on();
     Serial.begin(115200);
     while (!Serial)
         ; // Wait for serial port to open
     Serial.printf("\n\n\n");
-#ifdef ESP8266
-    // ESP8266 saves config to LittleFS file, ESP32 uses NVRAM
-    LittleFS.begin();
-#else
-    // No buzzer on ESP8266
-    tone(BEEPER_PIN, 1300, 500);
-#endif
-    led.on();
     ESP_LOGI(TAG, "=== Starting RATGDO Homekit version %s", AUTO_VERSION);
-
 #ifdef ESP8266
     ESP_LOGI(TAG, "%s", ESP.getFullVersion().c_str());
     ESP_LOGI(TAG, "Flash chip size 0x%X", ESP.getFlashChipSize());
     ESP_LOGI(TAG, "Flash chip mode 0x%X", ESP.getFlashChipMode());
     ESP_LOGI(TAG, "Flash chip speed 0x%X (%d MHz)", ESP.getFlashChipSpeed(), ESP.getFlashChipSpeed() / 1000000);
+    // Enable hardware watchdog with 8 second timeout
+    ESP.wdtEnable(8000);
+    // Setup software watchdog to feed hardware watchdog every 4 seconds
+    watchdogTicker.attach(4, watchdogReset);
     // Load users saved configuration (or set defaults)
     load_all_config_settings();
     // Now set log level to whatever user has requested
@@ -182,13 +189,9 @@ void setup()
     // on ESP8266 we setup everything ourselves.
     wifi_connect();
     setup_web();
-    if (!softAPmode)
-    {
-        setup_comms();
-        setup_homekit();
-    }
+    setup_comms();
+    // setup_homekit(); postpone HomeKit setup until we have an IP address
     led.idle();
-    status_start = _millis();
 #else
     // on ESP32 the HomeKit library we use does has callbacks which we use to setup everything else.
     setup_homekit();
@@ -201,27 +204,22 @@ void setup()
 void loop()
 {
     comms_loop();
-#ifndef USE_GDOLIB
+#if defined(ESP8266) || !defined(USE_GDOLIB)
     drycontact_loop();
 #endif
 
 #ifdef ESP8266
+    // On ESP8266 we handle WiFi and HomeKit ourselves
     wifi_loop();
-    // wait for a status command to be processes to properly set the initial state of
-    // all homekit characteristics.  Also timeout if we don't receive a status in
-    // a reasonable amount of time.  This prevents unintentional state changes if
-    // a home hub reads the state before we initialize everything
-    // Note, secplus1 doesnt have a status command so it will just timeout
-    if (status_done)
+    if (!homekit_setup_done && wifi_got_ip && !softAPmode)
     {
-        homekit_loop();
+        // We have postponed homekit setup until after we have got a IP address, in hope
+        // that this improves stability.
+        setup_homekit();
     }
-    else if (_millis() - status_start > 2000)
-    {
-        ESP_LOGI(TAG, "Status timeout, starting homekit");
-        status_done = true;
-    }
+    homekit_loop();
 #else
+    // On ESP32 Wifi is handled within HomeSpan library which has its own freeRTOS task
     // Features not available on ESP8266
     vehicle_loop();
 #endif
@@ -288,7 +286,7 @@ void service_timer_loop()
 
     // Check heap
     static _millis_t last_heap_check = 0;
-    if (current_millis - last_heap_check >= 1000)
+    if (current_millis - last_heap_check >= FREE_HEAP_CHECK_MS)
     {
         last_heap_check = current_millis;
         free_heap = ESP.getFreeHeap();
@@ -296,10 +294,16 @@ void service_timer_loop()
         {
             min_heap = free_heap;
             ESP_LOGI(TAG, "Free heap dropped to %d", min_heap);
+            if (free_heap < MIN_FREE_HEAP)
+            {
+                ESP_LOGW(TAG, "Free heap dropped below %d, rebooting to maintain stability", MIN_FREE_HEAP);
+                sync_and_restart();
+            }
         }
 
 #ifdef MMU_IRAM_HEAP
         // Also track IRAM heap usage
+        // IRAM heap is only allocated during initialization, so this should stabilize after setup.
         {
             HeapSelectIram ephemeral;
             free_iram = ESP.getFreeHeap();
