@@ -106,12 +106,19 @@ constexpr char nvram_messageLog[] = "messageLog";
 constexpr char nvram_has_distance[] = "has_distance";
 #endif
 
+struct configStr
+{
+    size_t max;
+    char *str;
+};
+
 struct configSetting
 {
     bool reboot;
     bool wifiChanged;
-    std::variant<bool, int, std::string> value;
-    bool (*fn)(const std::string &key, const std::string &value, configSetting *actions);
+    // std::variant<bool, int, std::string> value;
+    std::variant<bool, int, configStr> value;
+    bool (*fn)(const std::string &key, const char *value, configSetting *actions);
 };
 
 class userSettings
@@ -132,9 +139,8 @@ public:
     bool contains(const std::string &key);
     bool set(const std::string &key, const bool value);
     bool set(const std::string &key, const int value);
-    bool set(const std::string &key, const std::string &value);
     bool set(const std::string &key, const char *value);
-    std::variant<bool, int, std::string> get(const std::string &key);
+    std::variant<bool, int, configStr> get(const std::string &key);
     configSetting getDetail(const std::string &key);
     void toStdOut();
     void save();
@@ -148,18 +154,18 @@ public:
 #define ESP8266_SAVE_CONFIG()
 #endif
 
-    std::string getDeviceName() { return std::get<std::string>(get(cfg_deviceName)); };
+    char *getDeviceName() { return (std::get<configStr>(get(cfg_deviceName)).str); };
     bool getWifiChanged() { return std::get<bool>(get(cfg_wifiChanged)); };
     int getWifiPower() { return std::get<int>(get(cfg_wifiPower)); };
     int getWifiPhyMode() { return std::get<int>(get(cfg_wifiPhyMode)); };
     bool getStaticIP() { return std::get<bool>(get(cfg_staticIP)); };
-    std::string getLocalIP() { return std::get<std::string>(get(cfg_localIP)); };
-    std::string getSubnetMask() { return std::get<std::string>(get(cfg_subnetMask)); };
-    std::string getGatewayIP() { return std::get<std::string>(get(cfg_gatewayIP)); };
-    std::string getNameserverIP() { return std::get<std::string>(get(cfg_nameserverIP)); };
+    char *getLocalIP() { return (std::get<configStr>(get(cfg_localIP)).str); };
+    char *getSubnetMask() { return (std::get<configStr>(get(cfg_subnetMask)).str); };
+    char *getGatewayIP() { return (std::get<configStr>(get(cfg_gatewayIP)).str); };
+    char *getNameserverIP() { return (std::get<configStr>(get(cfg_nameserverIP)).str); };
     bool getPasswordRequired() { return std::get<bool>(get(cfg_passwordRequired)); };
-    std::string getwwwUsername() { return std::get<std::string>(get(cfg_wwwUsername)); };
-    std::string getwwwCredentials() { return std::get<std::string>(get(cfg_wwwCredentials)); };
+    char *getwwwUsername() { return (std::get<configStr>(get(cfg_wwwUsername)).str); };
+    char *getwwwCredentials() { return (std::get<configStr>(get(cfg_wwwCredentials)).str); };
     int getGDOSecurityType() { return std::get<int>(get(cfg_GDOSecurityType)); };
     int getTTCseconds() { return std::get<int>(get(cfg_TTCseconds)); };
     bool getTTClight() { return std::get<bool>(get(cfg_TTClight)); };
@@ -168,10 +174,10 @@ public:
     int getMotionTriggers() { return std::get<int>(get(cfg_motionTriggers)); };
     bool getEnableNTP() { return std::get<bool>(get(cfg_enableNTP)); };
     int getDoorUpdateAt() { return std::get<int>(get(cfg_doorUpdateAt)); };
-    std::string getTimeZone() { return std::get<std::string>(get(cfg_timeZone)); };
+    char *getTimeZone() { return (std::get<configStr>(get(cfg_timeZone)).str); };
     bool getSoftAPmode() { return std::get<bool>(get(cfg_softAPmode)); };
     bool getSyslogEn() { return std::get<bool>(get(cfg_syslogEn)); };
-    std::string getSyslogIP() { return std::get<std::string>(get(cfg_syslogIP)); };
+    char *getSyslogIP() { return (std::get<configStr>(get(cfg_syslogIP)).str); };
     int getSyslogPort() { return std::get<int>(get(cfg_syslogPort)); };
     int getLogLevel() { return std::get<int>(get(cfg_logLevel)); };
     bool getDCOpenClose() { return std::get<bool>(get(cfg_dcOpenClose)); };
@@ -211,12 +217,12 @@ public:
 
     void checkStats();
     int32_t read(const std::string &constKey, const int32_t dflt);
-    int32_t read(const std::string &constKey) { return read(constKey, 0); };
-    std::string read(const std::string &constKey, const std::string &dflt);
+    int32_t read(const std::string &constKey) { return read(constKey, (int32_t)0); };
+    std::string read(const std::string &constKey, const char *dflt);
     bool write(const std::string &constKey, const int32_t value, bool commit);
     bool write(const std::string &constKey, const int32_t value) { return write(constKey, value, true); };
-    bool write(const std::string &constKey, const std::string &value, bool commit);
-    bool write(const std::string &constKey, const std::string &value) { return write(constKey, value, true); };
+    bool write(const std::string &constKey, const char *value, bool commit);
+    bool write(const std::string &constKey, const char *value) { return write(constKey, value, true); };
     bool writeBlob(const std::string &constKey, const char *value, size_t size, bool commit);
     bool writeBlob(const std::string &constKey, const char *value, size_t size) { return writeBlob(constKey, value, size, true); };
     bool readBlob(const std::string &constKey, char *value, size_t size);

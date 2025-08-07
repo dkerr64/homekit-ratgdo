@@ -457,8 +457,8 @@ void handle_notfound()
 }
 
 #ifdef ESP8266
-#define AUTHENTICATE()                                                                                                                                  \
-    if (userConfig->getPasswordRequired() && !server.authenticateDigest(userConfig->getwwwUsername().c_str(), userConfig->getwwwCredentials().c_str())) \
+#define AUTHENTICATE()                                                                                                                  \
+    if (userConfig->getPasswordRequired() && !server.authenticateDigest(userConfig->getwwwUsername(), userConfig->getwwwCredentials())) \
         return server.requestAuthentication(DIGEST_AUTH, www_realm);
 #else
 String *ratgdoAuthenticate(HTTPAuthMethod mode, String enteredUsernameOrReq, String extraParams[])
@@ -572,7 +572,7 @@ void handle_everything()
     if (!registerRequest())
     {
         server.send(503, type_txt, response503);
-        ESP_LOGW(TAG,"Reject request, server too busy (handle_everything)");
+        ESP_LOGW(TAG, "Reject request, server too busy (handle_everything)");
         return;
     }
 
@@ -666,14 +666,14 @@ void handle_status()
     ADD_STR(json, "gitRepo", "homekit-ratgdo32");
 #endif
     ADD_INT(json, "upTime", upTime);
-    ADD_STR(json, cfg_deviceName, userConfig->getDeviceName().c_str());
-    ADD_STR(json, "userName", userConfig->getwwwUsername().c_str());
+    ADD_STR(json, cfg_deviceName, userConfig->getDeviceName());
+    ADD_STR(json, "userName", userConfig->getwwwUsername());
     ADD_BOOL(json, "paired", homekit_is_paired());
     ADD_STR(json, "firmwareVersion", std::string(AUTO_VERSION).c_str());
-    ADD_STR(json, cfg_localIP, userConfig->getLocalIP().c_str());
-    ADD_STR(json, cfg_subnetMask, userConfig->getSubnetMask().c_str());
-    ADD_STR(json, cfg_gatewayIP, userConfig->getGatewayIP().c_str());
-    ADD_STR(json, cfg_nameserverIP, userConfig->getNameserverIP().c_str());
+    ADD_STR(json, cfg_localIP, userConfig->getLocalIP());
+    ADD_STR(json, cfg_subnetMask, userConfig->getSubnetMask());
+    ADD_STR(json, cfg_gatewayIP, userConfig->getGatewayIP());
+    ADD_STR(json, cfg_nameserverIP, userConfig->getNameserverIP());
     ADD_STR(json, "macAddress", WiFi.macAddress().c_str());
     ADD_STR(json, "wifiSSID", WiFi.SSID().c_str());
     ADD_STR(json, "wifiRSSI", (std::to_string(WiFi.RSSI()) + " dBm, Channel " + std::to_string(WiFi.channel())).c_str());
@@ -693,7 +693,7 @@ void handle_status()
     ADD_INT(json, "crashCount", abs(crashCount));
     ADD_BOOL(json, cfg_staticIP, userConfig->getStaticIP());
     ADD_BOOL(json, cfg_syslogEn, userConfig->getSyslogEn());
-    ADD_STR(json, cfg_syslogIP, userConfig->getSyslogIP().c_str());
+    ADD_STR(json, cfg_syslogIP, userConfig->getSyslogIP());
     ADD_INT(json, cfg_syslogPort, userConfig->getSyslogPort());
     ADD_INT(json, cfg_logLevel, userConfig->getLogLevel());
     ADD_INT(json, cfg_TTCseconds, userConfig->getTTCseconds());
@@ -707,7 +707,7 @@ void handle_status()
     {
         ADD_INT(json, "serverTime", time(NULL));
     }
-    ADD_STR(json, cfg_timeZone, userConfig->getTimeZone().c_str());
+    ADD_STR(json, cfg_timeZone, userConfig->getTimeZone());
     ADD_BOOL(json, cfg_dcOpenClose, userConfig->getDCOpenClose());
     ADD_BOOL(json, cfg_obstFromStatus, userConfig->getObstFromStatus());
     ADD_INT(json, cfg_dcDebounceDuration, userConfig->getDCDebounceDuration());
@@ -789,38 +789,38 @@ void handle_logout()
     return server.requestAuthentication(DIGEST_AUTH, www_realm);
 }
 
-bool helperResetDoor(const std::string &key, const std::string &value, configSetting *action)
+bool helperResetDoor(const std::string &key, const char *value, configSetting *action)
 {
     reset_door();
     return true;
 }
 
-bool helperGarageLightOn(const std::string &key, const std::string &value, configSetting *action)
+bool helperGarageLightOn(const std::string &key, const char *value, configSetting *action)
 {
-    set_light((value == "1") ? true : false);
+    set_light((atoi(value) == 1) ? true : false);
     return true;
 }
 
-bool helperGarageDoorState(const std::string &key, const std::string &value, configSetting *action)
+bool helperGarageDoorState(const std::string &key, const char *value, configSetting *action)
 {
-    if (value == "1")
+    if (atoi(value) == 1)
         open_door();
     else
         close_door();
     return true;
 }
 
-bool helperGarageLockState(const std::string &key, const std::string &value, configSetting *action)
+bool helperGarageLockState(const std::string &key, const char *value, configSetting *action)
 {
-    set_lock((value == "1") ? 1 : 0);
+    set_lock((atoi(value) == 1) ? 1 : 0);
     return true;
 }
 
-bool helperCredentials(const std::string &key, const std::string &value, configSetting *action)
+bool helperCredentials(const std::string &key, const char *value, configSetting *action)
 {
-    char *newUsername = strstr(value.c_str(), "username");
-    char *newCredentials = strstr(value.c_str(), "credentials");
-    char *newPassword = strstr(value.c_str(), "password");
+    char *newUsername = strstr(value, "username");
+    char *newCredentials = strstr(value, "credentials");
+    char *newPassword = strstr(value, "password");
     if (!(newUsername && newCredentials && newPassword))
         return false;
 
@@ -850,13 +850,13 @@ bool helperCredentials(const std::string &key, const std::string &value, configS
     return true;
 }
 
-bool helperUpdateUnderway(const std::string &key, const std::string &value, configSetting *action)
+bool helperUpdateUnderway(const std::string &key, const char *value, configSetting *action)
 {
     firmwareSize = 0;
     firmwareUpdateSub = NULL;
-    char *md5 = strstr(value.c_str(), "md5");
-    char *size = strstr(value.c_str(), "size");
-    char *uuid = strstr(value.c_str(), "uuid");
+    char *md5 = strstr(value, "md5");
+    char *size = strstr(value, "size");
+    char *uuid = strstr(value, "uuid");
 
     if (!(md5 && size && uuid))
         return false;
@@ -888,7 +888,7 @@ bool helperUpdateUnderway(const std::string &key, const std::string &value, conf
     return true;
 }
 
-bool helperFactoryReset(const std::string &key, const std::string &value, configSetting *action)
+bool helperFactoryReset(const std::string &key, const char *value, configSetting *action)
 {
     ESP_LOGI(TAG, "Factory reset requested");
 #ifdef ESP8266
@@ -904,13 +904,13 @@ bool helperFactoryReset(const std::string &key, const std::string &value, config
 }
 
 #ifndef ESP8266
-bool helperAssistLaser(const std::string &key, const std::string &value, configSetting *action)
+bool helperAssistLaser(const std::string &key, const char *value, configSetting *action)
 {
-    if (value == "1")
+    if (atoi(value) == 1)
         laser.on();
     else
         laser.off();
-    notify_homekit_laser(value == "1");
+    notify_homekit_laser(atoi(value) == 1);
     return true;
 }
 #endif
@@ -953,28 +953,28 @@ void handle_setgdo()
 
         if (setGDOhandlers.count(key))
         {
-            ESP_LOGI(TAG, "Call handler for Key: %s, Value: %s", key.c_str(), value.c_str());
+            ESP_LOGI(TAG, "Call handler for Key: %s, Value: %s", key, value);
             actions = setGDOhandlers.at(key);
             if (actions.fn)
             {
-                error = error || !actions.fn(key, value, &actions);
+                error = error || !actions.fn(key, value.c_str(), &actions);
             }
             reboot = reboot || actions.reboot;
             wifiChanged = wifiChanged || actions.wifiChanged;
         }
         else if (userConfig->contains(key))
         {
-            ESP_LOGI(TAG, "Configuration set for Key: %s, Value: %s", key.c_str(), value.c_str());
+            ESP_LOGI(TAG, "Configuration set for Key: %s, Value: %s", key, value);
             actions = userConfig->getDetail(key);
             if (actions.fn)
             {
                 // Value will be set within called function
-                error = error || !actions.fn(key, value, &actions);
+                error = error || !actions.fn(key, value.c_str(), &actions);
             }
             else
             {
                 // No function to call, set value directly.
-                userConfig->set(key, value);
+                userConfig->set(key, value.c_str());
             }
             reboot = reboot || actions.reboot;
             wifiChanged = wifiChanged || actions.wifiChanged;
@@ -982,7 +982,7 @@ void handle_setgdo()
         }
         else
         {
-            ESP_LOGW(TAG, "Invalid Key: %s, Value: %s (F)", key.c_str(), value.c_str());
+            ESP_LOGW(TAG, "Invalid Key: %s, Value: %s (F)", key, value);
             error = true;
         }
         if (error)
@@ -1455,7 +1455,7 @@ void handle_firmware_upload()
         _updaterError.clear();
 
 #ifdef ESP8266
-        _authenticatedUpdate = !userConfig->getPasswordRequired() || server.authenticateDigest(userConfig->getwwwUsername().c_str(), userConfig->getwwwCredentials().c_str());
+        _authenticatedUpdate = !userConfig->getPasswordRequired() || server.authenticateDigest(userConfig->getwwwUsername(), userConfig->getwwwCredentials());
 #else
         _authenticatedUpdate = !userConfig->getPasswordRequired() || server.authenticate(ratgdoAuthenticate);
 #endif

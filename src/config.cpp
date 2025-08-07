@@ -63,10 +63,10 @@ nvRamClass *nvRam = nvRamClass::getInstance();
 #define GIVE_MUTEX() xSemaphoreGive(mutex)
 #endif
 
-bool setDeviceName(const std::string &key, const std::string &name, configSetting *action)
+bool setDeviceName(const std::string &key, const char *name, configSetting *action)
 {
     // Check we have a legal device name...
-    make_rfc952(device_name_rfc952, name.c_str(), sizeof(device_name_rfc952));
+    make_rfc952(device_name_rfc952, name, sizeof(device_name_rfc952));
     if (strlen(device_name_rfc952) == 0)
     {
         // cannot have a empty device name, reset to default...
@@ -77,13 +77,13 @@ bool setDeviceName(const std::string &key, const std::string &name, configSettin
     else
     {
         // device name okay, copy it to our global
-        strlcpy(device_name, name.c_str(), sizeof(device_name));
+        strlcpy(device_name, name, sizeof(device_name));
         userConfig->set(key, device_name);
     }
     return true;
 }
 
-bool helperWiFiPower(const std::string &key, const std::string &value, configSetting *action)
+bool helperWiFiPower(const std::string &key, const char *value, configSetting *action)
 {
     // Only reboot if value has changed
     if (std::get<int>(action->value) != std::stoi(value))
@@ -100,7 +100,7 @@ bool helperWiFiPower(const std::string &key, const std::string &value, configSet
     return true;
 }
 
-bool helperWiFiPhyMode(const std::string &key, const std::string &value, configSetting *action)
+bool helperWiFiPhyMode(const std::string &key, const char *value, configSetting *action)
 {
     // Only reboot if value has changed
     if (std::get<int>(action->value) != std::stoi(value))
@@ -117,7 +117,7 @@ bool helperWiFiPhyMode(const std::string &key, const std::string &value, configS
     return true;
 }
 
-bool helperGDOSecurityType(const std::string &key, const std::string &value, configSetting *action)
+bool helperGDOSecurityType(const std::string &key, const char *value, configSetting *action)
 {
     // Call fn to reset door
     userConfig->set(key, value);
@@ -129,7 +129,7 @@ bool helperGDOSecurityType(const std::string &key, const std::string &value, con
     return true;
 }
 
-bool helperLEDidle(const std::string &key, const std::string &value, configSetting *action)
+bool helperLEDidle(const std::string &key, const char *value, configSetting *action)
 {
     // call fn to set LED object
     userConfig->set(key, value);
@@ -138,7 +138,7 @@ bool helperLEDidle(const std::string &key, const std::string &value, configSetti
     return true;
 }
 
-bool helperMotionTriggers(const std::string &key, const std::string &value, configSetting *action)
+bool helperMotionTriggers(const std::string &key, const char *value, configSetting *action)
 {
     uint8_t triggers = (uint8_t)std::stoi(value);
     // Only reboot if need for motion sensor accessory changes...
@@ -155,16 +155,16 @@ bool helperMotionTriggers(const std::string &key, const std::string &value, conf
     return true;
 }
 
-bool helperTimeZone(const std::string &key, const std::string &value, configSetting *action)
+bool helperTimeZone(const std::string &key, const char *value, configSetting *action)
 {
     userConfig->set(key, value);
-    size_t pos = value.find(';');
-    if (pos != std::string::npos)
+    if (char *p = strchr(value, ';'))
     {
         // semicolon may separate continent/city from posix TZ string
         // if no semicolon then no POSIX code, so use UTC
-        ESP_LOGI(TAG, "Set timezone: %s", value.substr(pos + 1).c_str());
-        configTzTime(value.substr(pos + 1).c_str(), NTP_SERVER);
+        p++;
+        ESP_LOGI(TAG, "Set timezone: %s", p);
+        configTzTime(p, NTP_SERVER);
     }
     else
     {
@@ -175,17 +175,17 @@ bool helperTimeZone(const std::string &key, const std::string &value, configSett
     return true;
 }
 
-bool helperSyslogEn(const std::string &key, const std::string &value, configSetting *action)
+bool helperSyslogEn(const std::string &key, const char *value, configSetting *action)
 {
     userConfig->set(key, value);
     // these globals are set to optimize log message handling...
-    strlcpy(syslogIP, userConfig->getSyslogIP().c_str(), sizeof(syslogIP));
+    strlcpy(syslogIP, userConfig->getSyslogIP(), sizeof(syslogIP));
     syslogPort = userConfig->getSyslogPort();
     syslogEn = userConfig->getSyslogEn();
     return true;
 }
 
-bool helperLogLevel(const std::string &key, const std::string &value, configSetting *action)
+bool helperLogLevel(const std::string &key, const char *value, configSetting *action)
 {
     userConfig->set(key, value);
 #ifndef ESP32
@@ -196,7 +196,7 @@ bool helperLogLevel(const std::string &key, const std::string &value, configSett
 
 #ifndef ESP8266
 // These features are not available on ESP8266
-bool helperBuiltInTTC(const std::string &key, const std::string &value, configSetting *action)
+bool helperBuiltInTTC(const std::string &key, const char *value, configSetting *action)
 {
     userConfig->set(key, value);
 #ifdef USE_GDOLIB
@@ -210,7 +210,7 @@ bool helperBuiltInTTC(const std::string &key, const std::string &value, configSe
     return true;
 }
 
-bool helperVehicleThreshold(const std::string &key, const std::string &value, configSetting *action)
+bool helperVehicleThreshold(const std::string &key, const char *value, configSetting *action)
 {
     userConfig->set(key, value);
     // set globals so takes effect immediately
@@ -218,21 +218,21 @@ bool helperVehicleThreshold(const std::string &key, const std::string &value, co
     return true;
 }
 
-bool helperVehicleHomeKit(const std::string &key, const std::string &value, configSetting *action)
+bool helperVehicleHomeKit(const std::string &key, const char *value, configSetting *action)
 {
     userConfig->set(key, value);
     enable_service_homekit_vehicle(userConfig->getVehicleHomeKit());
     return true;
 }
 
-bool helperLaser(const std::string &key, const std::string &value, configSetting *action)
+bool helperLaser(const std::string &key, const char *value, configSetting *action)
 {
     userConfig->set(key, value);
     enable_service_homekit_laser(userConfig->getLaserEnabled() && userConfig->getLaserHomeKit());
     return true;
 }
 
-bool helperUseSWserial(const std::string &key, const std::string &value, configSetting *action)
+bool helperUseSWserial(const std::string &key, const char *value, configSetting *action)
 {
     // We must shutdown the GDOLIB tasks before changing the useSWserial setting.
     gdo_deinit();
@@ -240,7 +240,7 @@ bool helperUseSWserial(const std::string &key, const std::string &value, configS
     return true;
 }
 
-bool helperOccupancyDuration(const std::string &key, const std::string &value, configSetting *action)
+bool helperOccupancyDuration(const std::string &key, const char *value, configSetting *action)
 {
     userConfig->set(key, value);
     enable_service_homekit_room_occupancy(userConfig->getOccupancyDuration() > 0);
@@ -264,21 +264,38 @@ userSettings::userSettings()
 #endif
     strlcpy(device_name, default_device_name, sizeof(device_name));
     make_rfc952(device_name_rfc952, default_device_name, sizeof(device_name_rfc952));
-    // key, {reboot, wifiChanged, value, fn to call}
+    IRAM_START
+    char *localIPBuf = (char *)malloc(IP4ADDR_STRLEN_MAX);
+    strlcpy(localIPBuf, "0.0.0.0", 16);
+    char *subnetMaskBuf = (char *)malloc(IP4ADDR_STRLEN_MAX);
+    strlcpy(subnetMaskBuf, "0.0.0.0", 16);
+    char *gatewayIPBuf = (char *)malloc(IP4ADDR_STRLEN_MAX);
+    strlcpy(gatewayIPBuf, "0.0.0.0", 16);
+    char *nameserverIPBuf = (char *)malloc(IP4ADDR_STRLEN_MAX);
+    strlcpy(nameserverIPBuf, "0.0.0.0", 16);
+    char *syslogIPBuf = (char *)malloc(IP4ADDR_STRLEN_MAX);
+    strlcpy(syslogIPBuf, "0.0.0.0", 16);
+    char *timezoneBuf = (char *)malloc(64);
+    *timezoneBuf = (char)0;
+    char *usernameBuf = (char *)malloc(32);
+    strlcpy(usernameBuf, "admin", 32);
+    char *credentialsBuf = (char *)malloc(36);
+    strlcpy(credentialsBuf, "10d3c00fa1e09696601ef113b99f8a87", 36);
+    //  key, {reboot, wifiChanged, value, fn to call}
     settings = {
-        {cfg_deviceName, {false, false, default_device_name, setDeviceName}}, // call fn to set global
+        {cfg_deviceName, {false, false, (configStr){DEVICE_NAME_SIZE, default_device_name}, setDeviceName}}, // call fn to set global
         {cfg_wifiChanged, {true, true, false, NULL}},
         {cfg_wifiPower, {true, true, WIFI_POWER_MAX, helperWiFiPower}}, // call fn to set reboot only if setting changed
         {cfg_wifiPhyMode, {true, true, 0, helperWiFiPhyMode}},          // call fn to set reboot only if setting changed
         {cfg_staticIP, {true, true, false, NULL}},
-        {cfg_localIP, {true, true, "0.0.0.0", NULL}},
-        {cfg_subnetMask, {true, true, "0.0.0.0", NULL}},
-        {cfg_gatewayIP, {true, true, "0.0.0.0", NULL}},
-        {cfg_nameserverIP, {true, true, "0.0.0.0", NULL}},
+        {cfg_localIP, {true, true, (configStr){IP4ADDR_STRLEN_MAX, localIPBuf}, NULL}},
+        {cfg_subnetMask, {true, true, (configStr){IP4ADDR_STRLEN_MAX, subnetMaskBuf}, NULL}},
+        {cfg_gatewayIP, {true, true, (configStr){IP4ADDR_STRLEN_MAX, gatewayIPBuf}, NULL}},
+        {cfg_nameserverIP, {true, true, (configStr){IP4ADDR_STRLEN_MAX, nameserverIPBuf}, NULL}},
         {cfg_passwordRequired, {false, false, false, NULL}},
-        {cfg_wwwUsername, {false, false, "admin", NULL}},
+        {cfg_wwwUsername, {false, false, (configStr){32, usernameBuf}, NULL}},
         //  Credentials are MD5 Hash... server.credentialHash(username, realm, "password");
-        {cfg_wwwCredentials, {false, false, "10d3c00fa1e09696601ef113b99f8a87", NULL}},
+        {cfg_wwwCredentials, {false, false, (configStr){36, credentialsBuf}, NULL}},
         {cfg_GDOSecurityType, {true, false, 2, helperGDOSecurityType}}, // call fn to reset door
         {cfg_TTCseconds, {false, false, 5, NULL}},
         {cfg_TTClight, {false, false, true, NULL}},
@@ -290,10 +307,10 @@ userSettings::userSettings()
         // Will contain string of region/city and POSIX code separated by semicolon...
         // For example... "America/New_York;EST5EDT,M3.2.0,M11.1.0"
         // Current maximum string length is known to be 60 chars (+ null terminator), see JavaScript console log.
-        {cfg_timeZone, {false, false, "", helperTimeZone}}, // call fn to set system time zone
+        {cfg_timeZone, {false, false, (configStr){64, timezoneBuf}, helperTimeZone}}, // call fn to set system time zone
         {cfg_softAPmode, {true, false, false, NULL}},
         {cfg_syslogEn, {false, false, false, helperSyslogEn}}, // call fn to set globals
-        {cfg_syslogIP, {false, false, "0.0.0.0", NULL}},
+        {cfg_syslogIP, {false, false, (configStr){IP4ADDR_STRLEN_MAX, syslogIPBuf}, NULL}},
         {cfg_syslogPort, {false, false, 514, NULL}},
         {cfg_logLevel, {false, false, ESP_LOG_INFO, helperLogLevel}}, // call fn to set log level
         {cfg_dcOpenClose, {true, false, false, NULL}},
@@ -313,15 +330,16 @@ userSettings::userSettings()
         {cfg_enableIPv6, {true, false, false, NULL}},
 #endif
     };
+    IRAM_END("Config settings");
 }
 
 void userSettings::toStdOut()
 {
     for (const auto &it : settings)
     {
-        if (std::holds_alternative<std::string>(it.second.value))
+        if (std::holds_alternative<configStr>(it.second.value))
         {
-            Serial.printf("%s:\t%s\n", it.first.c_str(), std::get<std::string>(it.second.value).c_str());
+            Serial.printf("%s:\t%s\n", it.first.c_str(), std::get<configStr>(it.second.value).str);
         }
         else if (std::holds_alternative<int>(it.second.value))
         {
@@ -338,9 +356,9 @@ void userSettings::toFile(Print &file)
 {
     for (const auto &it : settings)
     {
-        if (std::holds_alternative<std::string>(it.second.value))
+        if (std::holds_alternative<configStr>(it.second.value))
         {
-            file.printf("%s,,%s\n", it.first.c_str(), std::get<std::string>(it.second.value).c_str());
+            file.printf("%s,,%s\n", it.first.c_str(), std::get<configStr>(it.second.value).str);
         }
         else if (std::holds_alternative<int>(it.second.value))
         {
@@ -407,7 +425,7 @@ void userSettings::load()
         }
         *value++ = 0;
         // Force use of the string overload
-        set(key, (std::string)value);
+        set(key, value);
     }
     file.close();
     return;
@@ -428,9 +446,9 @@ void userSettings::save()
     ESP_LOGI(TAG, "Writing user configuration to NVRAM");
     for (const auto &it : settings)
     {
-        if (std::holds_alternative<std::string>(it.second.value))
+        if (std::holds_alternative<configStr>(it.second.value))
         {
-            nvRam->write(it.first, std::get<std::string>(it.second.value));
+            nvRam->write(it.first, std::get<configStr>(it.second.value).str);
         }
         else if (std::holds_alternative<int>(it.second.value))
         {
@@ -452,9 +470,11 @@ void userSettings::load()
     ESP_LOGI(TAG, "Read user configuration from NVRAM");
     for (auto &it : settings)
     {
-        if (std::holds_alternative<std::string>(it.second.value))
+        if (std::holds_alternative<configStr>(it.second.value))
         {
-            it.second.value = (std::string)nvRam->read(it.first, std::get<std::string>(it.second.value));
+            char *p = std::get<configStr>(it.second.value).str;
+            size_t max = std::get<configStr>(it.second.value).max;
+            strlcpy(p, nvRam->read(it.first, p).c_str(), max);
         }
         else if (std::holds_alternative<int>(it.second.value))
         {
@@ -473,7 +493,7 @@ bool userSettings::contains(const std::string &key)
     return (settings.count(key) > 0);
 }
 
-std::variant<bool, int, std::string> userSettings::get(const std::string &key)
+std::variant<bool, int, configStr> userSettings::get(const std::string &key)
 {
     return settings[key].value;
 }
@@ -529,15 +549,17 @@ bool userSettings::set(const std::string &key, const int value)
     return rc;
 }
 
-bool userSettings::set(const std::string &key, const std::string &value)
+bool userSettings::set(const std::string &key, const char *value)
 {
     bool rc = false;
     TAKE_MUTEX();
     if (settings.count(key))
     {
-        if (std::holds_alternative<std::string>(settings[key].value))
+        if (std::holds_alternative<configStr>(settings[key].value))
         {
-            settings[key].value = value;
+            char *p = std::get<configStr>(settings[key].value).str;
+            size_t max = std::get<configStr>(settings[key].value).max;
+            strlcpy(p, value, max);
 #ifndef ESP8266
             nvRam->write(key, value);
 #endif
@@ -545,7 +567,7 @@ bool userSettings::set(const std::string &key, const std::string &value)
         }
         else if (std::holds_alternative<bool>(settings[key].value))
         {
-            settings[key].value = (value == "true") || (atoi(value.c_str()) != 0);
+            settings[key].value = (!strcmp(value, "true")) || (atoi(value) != 0);
 #ifndef ESP8266
             nvRam->write(key, std::get<bool>(settings[key].value) ? 1 : 0);
 #endif
@@ -553,20 +575,15 @@ bool userSettings::set(const std::string &key, const std::string &value)
         }
         else if (std::holds_alternative<int>(settings[key].value))
         {
-            settings[key].value = stoi(value);
+            settings[key].value = atoi(value);
 #ifndef ESP8266
-            nvRam->write(key, stoi(value));
+            nvRam->write(key, atoi(value));
 #endif
             rc = true;
         }
     }
     GIVE_MUTEX();
     return rc;
-}
-
-bool userSettings::set(const std::string &key, const char *value)
-{
-    return set(key, std::string(value));
 }
 
 #ifdef ESP8266
@@ -653,13 +670,13 @@ int32_t nvRamClass::read(const std::string &constKey, const int32_t dflt)
     return value;
 }
 
-std::string nvRamClass::read(const std::string &constKey, const std::string &dflt)
+std::string nvRamClass::read(const std::string &constKey, const char *dflt)
 {
     std::string key = constKey;
     if (key.length() >= NVS_KEY_NAME_MAX_SIZE)
         key.resize(NVS_KEY_NAME_MAX_SIZE - 1); // allow for null terminator
 
-    std::string value = dflt;
+    std::string value(dflt);
     size_t len;
     esp_err_t err = nvs_get_str(nvHandle, key.c_str(), NULL, &len);
     if (err == ESP_OK)
@@ -731,13 +748,13 @@ bool nvRamClass::writeBlob(const std::string &constKey, const char *value, size_
     return true;
 }
 
-bool nvRamClass::write(const std::string &constKey, const std::string &value, bool commit)
+bool nvRamClass::write(const std::string &constKey, const char *value, bool commit)
 {
     std::string key = constKey;
     if (key.length() >= NVS_KEY_NAME_MAX_SIZE)
         key.resize(NVS_KEY_NAME_MAX_SIZE - 1); // allow for null terminator
 
-    esp_err_t err = nvs_set_str(nvHandle, key.c_str(), value.c_str());
+    esp_err_t err = nvs_set_str(nvHandle, key.c_str(), value);
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "NVRAM set error for: %s (%s)", key.c_str(), esp_err_to_name(err));

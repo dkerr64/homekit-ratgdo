@@ -266,7 +266,7 @@ void service_timer_loop()
                 lastDoorUpdateAt = (_millis_t)(((time_t)userConfig->getDoorUpdateAt() - timeNow) * 1000LL) + current_millis;
                 ESP_LOGI(TAG, "Last door update at: %s", timeString((time_t)userConfig->getDoorUpdateAt()));
             }
-            if (userConfig->getTimeZone().length() == 0)
+            if (strlen(userConfig->getTimeZone()) == 0)
             {
                 // no timeZone set, try and find it automatically
                 get_auto_timezone();

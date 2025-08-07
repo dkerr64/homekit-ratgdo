@@ -399,7 +399,7 @@ void setup_comms()
 
         // read from flash, default of 0 if file not exist
 #ifdef ESP32
-        rolling_code = nvRam->read(nvram_rolling, 0);
+        rolling_code = nvRam->read(nvram_rolling);
 #else
         rolling_code = read_int_from_file(nvram_rolling, 0);
 #endif
@@ -455,7 +455,7 @@ void setup_comms()
         }
         // read from flash, default of 0 if file not exist
         uint32_t id_code = nvRam->read(nvram_id_code);
-        uint32_t rolling_code = nvRam->read(nvram_rolling, 0);
+        uint32_t rolling_code = nvRam->read(nvram_rolling);
         if (!id_code || !rolling_code)
         {
             ESP_LOGI(TAG, "generate new id code");

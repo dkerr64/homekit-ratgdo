@@ -75,8 +75,8 @@ void onGotIP(const WiFiEventStationModeGotIP &evt)
     userConfig->set(cfg_gatewayIP, evt.gw.toString().c_str());
     userConfig->set(cfg_subnetMask, evt.mask.toString().c_str());
     userConfig->set(cfg_nameserverIP, (WiFi.dnsIP().isSet()) ? WiFi.dnsIP().toString().c_str() : evt.gw.toString().c_str());
-    ESP_LOGI(TAG, "WiFi Got IP: %s, Mask: %s, Gateway: %s, DNS: %s", userConfig->getLocalIP().c_str(), userConfig->getSubnetMask().c_str(),
-             userConfig->getGatewayIP().c_str(), userConfig->getNameserverIP().c_str());
+    ESP_LOGI(TAG, "WiFi Got IP: %s, Mask: %s, Gateway: %s, DNS: %s", userConfig->getLocalIP(), userConfig->getSubnetMask(),
+             userConfig->getGatewayIP(), userConfig->getNameserverIP());
     ESP8266_SAVE_CONFIG();
 }
 
@@ -152,10 +152,10 @@ void wifi_connect()
             IPAddress gw;
             IPAddress nm;
             IPAddress dns;
-            if (ip.fromString(userConfig->getLocalIP().c_str()) &&
-                gw.fromString(userConfig->getGatewayIP().c_str()) &&
-                nm.fromString(userConfig->getSubnetMask().c_str()) &&
-                dns.fromString(userConfig->getNameserverIP().c_str()))
+            if (ip.fromString(userConfig->getLocalIP()) &&
+                gw.fromString(userConfig->getGatewayIP()) &&
+                nm.fromString(userConfig->getSubnetMask()) &&
+                dns.fromString(userConfig->getNameserverIP()))
             {
                 WiFi.config(ip, gw, nm, dns);
             }

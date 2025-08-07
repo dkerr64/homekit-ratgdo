@@ -68,7 +68,7 @@ bool get_auto_timezone()
             String tz = http.getString();
             tz.trim();
             userConfig->set(cfg_timeZone, tz.c_str());
-            ESP_LOGI(TAG, "Automatic timezone set to: %s", userConfig->getTimeZone().c_str());
+            ESP_LOGI(TAG, "Automatic timezone set to: %s", userConfig->getTimeZone());
             success = true;
         }
         http.end();
@@ -154,29 +154,29 @@ void load_all_config_settings()
     ESP_LOGI(TAG, "=== Load all config settings for %s", device_name);
     userConfig->load();
     // Set globals...
-    strlcpy(device_name, userConfig->getDeviceName().c_str(), sizeof(device_name));
+    strlcpy(device_name, userConfig->getDeviceName(), sizeof(device_name));
     make_rfc952(device_name_rfc952, device_name, sizeof(device_name_rfc952));
     led.setIdleState(userConfig->getLEDidle());
     motionTriggers.asInt = userConfig->getMotionTriggers();
     softAPmode = userConfig->getSoftAPmode();
-    strlcpy(syslogIP, userConfig->getSyslogIP().c_str(), sizeof(syslogIP));
+    strlcpy(syslogIP, userConfig->getSyslogIP(), sizeof(syslogIP));
     syslogPort = userConfig->getSyslogPort();
     syslogEn = userConfig->getSyslogEn();
     rebootSeconds = userConfig->getRebootSeconds();
 
     // Now log what we have loaded
-    ESP_LOGI(TAG, "   deviceName:          %s", userConfig->getDeviceName().c_str());
+    ESP_LOGI(TAG, "   deviceName:          %s", userConfig->getDeviceName());
     ESP_LOGI(TAG, "   wifiChanged:         %s", userConfig->getWifiChanged() ? "true" : "false");
     ESP_LOGI(TAG, "   wifiPower:           %d", userConfig->getWifiPower());
     ESP_LOGI(TAG, "   wifiPhyMode:         %d", userConfig->getWifiPhyMode());
     ESP_LOGI(TAG, "   staticIP:            %s", userConfig->getStaticIP() ? "true" : "false");
-    ESP_LOGI(TAG, "   localIP:             %s", userConfig->getLocalIP().c_str());
-    ESP_LOGI(TAG, "   subnetMask:          %s", userConfig->getSubnetMask().c_str());
-    ESP_LOGI(TAG, "   gatewayIP:           %s", userConfig->getGatewayIP().c_str());
-    ESP_LOGI(TAG, "   nameserverIP:        %s", userConfig->getNameserverIP().c_str());
+    ESP_LOGI(TAG, "   localIP:             %s", userConfig->getLocalIP());
+    ESP_LOGI(TAG, "   subnetMask:          %s", userConfig->getSubnetMask());
+    ESP_LOGI(TAG, "   gatewayIP:           %s", userConfig->getGatewayIP());
+    ESP_LOGI(TAG, "   nameserverIP:        %s", userConfig->getNameserverIP());
     ESP_LOGI(TAG, "   wwwPWrequired:       %s", userConfig->getPasswordRequired() ? "true" : "false");
-    ESP_LOGI(TAG, "   wwwUsername:         %s", userConfig->getwwwUsername().c_str());
-    ESP_LOGI(TAG, "   wwwCredentials:      %s", userConfig->getwwwCredentials().c_str());
+    ESP_LOGI(TAG, "   wwwUsername:         %s", userConfig->getwwwUsername());
+    ESP_LOGI(TAG, "   wwwCredentials:      %s", userConfig->getwwwCredentials());
     ESP_LOGI(TAG, "   GDOSecurityType:     %d", userConfig->getGDOSecurityType());
     ESP_LOGI(TAG, "   UseToggleToClose:    %d", userConfig->getUseToggleToClose());
     ESP_LOGI(TAG, "   TTCseconds:          %d", userConfig->getTTCseconds());
@@ -185,10 +185,10 @@ void load_all_config_settings()
     ESP_LOGI(TAG, "   motionTriggers:      %d", userConfig->getMotionTriggers());
     ESP_LOGI(TAG, "   enableNTP:           %s", userConfig->getEnableNTP() ? "true" : "false");
     ESP_LOGI(TAG, "   doorUpdateAt:        %d", userConfig->getDoorUpdateAt());
-    ESP_LOGI(TAG, "   timeZone:            %s", userConfig->getTimeZone().c_str());
+    ESP_LOGI(TAG, "   timeZone:            %s", userConfig->getTimeZone());
     ESP_LOGI(TAG, "   softAPmode:          %s", userConfig->getSoftAPmode() ? "true" : "false");
     ESP_LOGI(TAG, "   syslogEn:            %s", userConfig->getSyslogEn() ? "true" : "false");
-    ESP_LOGI(TAG, "   syslogIP:            %s", userConfig->getSyslogIP().c_str());
+    ESP_LOGI(TAG, "   syslogIP:            %s", userConfig->getSyslogIP());
     ESP_LOGI(TAG, "   syslogPort:          %d", userConfig->getSyslogPort());
 #ifndef ESP8266
     // Features not available on ESP8266
@@ -212,7 +212,7 @@ void load_all_config_settings()
         sntp_set_time_sync_notification_cb(time_is_set);
         sntp_set_sync_interval(SNTP_SYNC_INTERVAL);
 #endif
-        ESP_LOGI(TAG, "Timezone: %s", userConfig->getTimeZone().c_str());
+        ESP_LOGI(TAG, "Timezone: %s", userConfig->getTimeZone());
         std::string tz = userConfig->getTimeZone();
         size_t pos = tz.find(';');
         if (pos != std::string::npos)

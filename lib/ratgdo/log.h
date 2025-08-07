@@ -22,14 +22,13 @@
 #include "HomeSpan.h"
 #endif
 
-
 #ifdef ESP8266
 // This can be large, but not too large.
 // On ESP8266 we save logs in IRAM heap, which is approx 18KB, we also need
 // space for other data in here, so during development monitor logs and adjust
 // this smaller if necessary.  IRAM malloc's are all done during startup.
 #ifdef MMU_IRAM_HEAP
-#define LOG_BUFFER_SIZE (1024 * 8)
+#define LOG_BUFFER_SIZE (1024 * 6)
 #else
 #define LOG_BUFFER_SIZE 1024
 #endif
