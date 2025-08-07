@@ -376,7 +376,7 @@ void setup_web()
         ESP_LOGE(TAG, "Failed to allocated buffer for loop JSON, size: %d", LOOP_JSON_BUFFER_SIZE);
         return;
     }
-    ESP_LOGI(TAG, "Allocated buffer for status JSON, size: %d", LOOP_JSON_BUFFER_SIZE);
+    ESP_LOGI(TAG, "Allocated buffer for loop JSON, size: %d", LOOP_JSON_BUFFER_SIZE);
 #ifndef ESP8266
     // We allocated json as a global block.  We are on dual core CPU.  We need to serialize access to the resource.
     jsonMutex = xSemaphoreCreateMutex();

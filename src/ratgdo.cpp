@@ -136,10 +136,11 @@ void setup()
     ESP_LOGI(TAG, "Flash chip size 0x%X", ESP.getFlashChipSize());
     ESP_LOGI(TAG, "Flash chip mode 0x%X", ESP.getFlashChipMode());
     ESP_LOGI(TAG, "Flash chip speed 0x%X (%d MHz)", ESP.getFlashChipSpeed(), ESP.getFlashChipSpeed() / 1000000);
-    // Enable hardware watchdog with 8 second timeout
-    ESP.wdtEnable(8000);
-    // Setup software watchdog to feed hardware watchdog every 4 seconds
-    watchdogTicker.attach(4, watchdogReset);
+    ESP_LOGI(TAG, "Free heap: %d", ESP.getFreeHeap());
+    // Enable hardware watchdog
+    ESP.wdtEnable(19000);
+    // Setup software watchdog to feed hardware watchdog
+    watchdogTicker.attach(9, watchdogReset);
     // Load users saved configuration (or set defaults)
     load_all_config_settings();
     // Now set log level to whatever user has requested
@@ -190,6 +191,7 @@ void setup()
     wifi_connect();
     setup_web();
     setup_comms();
+    ESP_LOGI(TAG, "Free heap after setup: %d", ESP.getFreeHeap());
     // setup_homekit(); postpone HomeKit setup until we have an IP address
     led.idle();
 #else

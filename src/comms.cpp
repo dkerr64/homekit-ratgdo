@@ -350,8 +350,12 @@ void setup_comms()
     if (doorControlType == 0)
         doorControlType = userConfig->getGDOSecurityType();
 
-#ifndef USE_GDOLIB
-    // Create packet queue
+#if defined(ESP8266) || !defined(USE_GDOLIB)
+    IRAM_START
+    // IRAM heap is used only for allocating globals, to leave as much regular heap
+    // available during operations.  We need to carefully monitor useage so as not
+    // to exceed available IRAM.  We can adjust the LOG_BUFFER_SIZE (in log.h) if we
+    // need to make more space available for initialization.
 #ifdef ESP32
     pkt_q = xQueueCreate(16, sizeof(PacketAction));
 #else
@@ -361,9 +365,7 @@ void setup_comms()
     if (doorControlType == 1)
     {
         ESP_LOGI(TAG, "=== Setting up comms for SECURITY+1.0 protocol");
-
-        sw_serial.begin(1200, SWSERIAL_8E1, UART_RX_PIN, UART_TX_PIN, true);
-
+        sw_serial.begin(1200, SWSERIAL_8E1, UART_RX_PIN, UART_TX_PIN, true, 32);
         wallPanelDetected = false;
         wallplateBooting = false;
         doorState = GarageDoorCurrentState::UNKNOWN;
@@ -374,11 +376,10 @@ void setup_comms()
     {
         ESP_LOGI(TAG, "=== Setting up comms for SECURITY+2.0 protocol");
 
-        sw_serial.begin(9600, SWSERIAL_8N1, UART_RX_PIN, UART_TX_PIN, true);
+        sw_serial.begin(9600, SWSERIAL_8N1, UART_RX_PIN, UART_TX_PIN, true, 32);
         sw_serial.enableIntTx(false);
         sw_serial.enableAutoBaud(true); // found in ratgdo/espsoftwareserial branch autobaud
 
-// read from flash, default of 0 if file not exist
 #ifdef ESP32
         id_code = nvRam->read(nvram_id_code);
 #else
@@ -421,6 +422,7 @@ void setup_comms()
         ESP_LOGI(TAG, "=== Setting up comms for dry contact protocol");
         pinMode(UART_TX_PIN, OUTPUT);
     }
+    IRAM_END("Comms initialized");
 #else // !USE_GDOLIB
     esp_err_t err = ESP_OK;
 
@@ -1088,7 +1090,7 @@ void comms_loop_sec1()
                 cmdDelay = 0;
                 if (retryCount++ < MAX_COMMS_RETRY)
                 {
-                    ESP_LOGE(TAG, "transmit failed, will retry");
+                    ESP_LOGD(TAG, "transmit failed, will retry");
 #ifdef ESP32
                     xQueueSendToFront(pkt_q, &pkt_ac, 0); // ignore errors
 #endif
@@ -1147,7 +1149,7 @@ void comms_loop_sec2()
 
                 if (retryCount++ < MAX_COMMS_RETRY)
                 {
-                    ESP_LOGE(TAG, "transmit failed, will retry");
+                    ESP_LOGD(TAG, "transmit failed, will retry");
 #ifdef ESP32
                     xQueueSendToFront(pkt_q, &pkt_ac, 0); // ignore errors
 #endif
