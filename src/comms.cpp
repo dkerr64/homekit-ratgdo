@@ -676,7 +676,7 @@ void wallPlate_Emulation()
 void comms_loop_sec1()
 {
     static bool reading_msg = false;
-    static uint16_t byte_count = 0;
+    static uint32_t byte_count = 0;
     static RxPacket rx_packet;
     bool gotMessage = false;
 
@@ -1024,7 +1024,7 @@ void comms_loop_sec1()
     PacketAction pkt_ac;
     static uint32_t cmdDelay = 0;
     _millis_t now;
-    static uint16_t retryCount = 0;
+    static uint32_t retryCount = 0;
     bool okToSend = false;
     uint32_t msgs;
 
@@ -1123,7 +1123,7 @@ void comms_loop_sec1()
  */
 void comms_loop_sec2()
 {
-    static uint16_t retryCount = 0;
+    static uint32_t retryCount = 0;
 
     // no incoming data, check if we have command queued
     if (!sw_serial.available())

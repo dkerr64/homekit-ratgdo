@@ -44,13 +44,13 @@
 #define LINE_BUFFER_SIZE 256
 
 extern bool syslogEn;
-extern uint16_t syslogPort;
+extern uint32_t syslogPort;
 extern char syslogIP[IP4ADDR_STRLEN_MAX];
 extern bool suppressSerialLog;
 
 extern time_t rebootTime;
 extern time_t crashTime;
-extern int16_t crashCount;
+extern int32_t crashCount;
 
 typedef struct logBuffer
 {

@@ -74,7 +74,7 @@ char *test_str = NULL;
 #endif
 void handle_update();
 void handle_firmware_upload();
-void SSEHandler(uint8_t channel);
+void SSEHandler(uint32_t channel);
 
 #ifdef ESP8266
 EspSaveCrash saveCrash(1408, 1024, true, &crashCallback);
@@ -153,7 +153,7 @@ struct SSESubscription
 SSESubscription subscription[SSE_MAX_CHANNELS];
 // During firmware update note which subscribed client is updating
 SSESubscription *firmwareUpdateSub = NULL;
-uint8_t subscriptionCount = 0;
+uint32_t subscriptionCount = 0;
 
 // Performance management - removed redundant connection tracking
 #define MIN_REQUEST_INTERVAL_MS 100
@@ -396,7 +396,7 @@ void setup_web()
     else if (garage_door.has_motion_sensor != (bool)motionTriggers.bit.motion)
     {
         // sync up web page tracking of whether we have motion sensor or not.
-        ESP_LOGI(TAG, "Motion trigger mismatch, reset to %d", (uint8_t)garage_door.has_motion_sensor);
+        ESP_LOGI(TAG, "Motion trigger mismatch, reset to %d", (int)garage_door.has_motion_sensor);
         motionTriggers.bit.motion = (uint8_t)garage_door.has_motion_sensor;
         userConfig->set(cfg_motionTriggers, motionTriggers.asInt);
         ESP8266_SAVE_CONFIG();
@@ -430,7 +430,7 @@ void setup_web()
     server.collectHeaders(headerkeys, headerkeyssize);
     server.begin();
     // initialize all the Server-Sent Events (SSE) slots.
-    for (uint8_t i = 0; i < SSE_MAX_CHANNELS; i++)
+    for (uint32_t i = 0; i < SSE_MAX_CHANNELS; i++)
     {
         subscription[i].SSEconnected = false;
         subscription[i].clientIP = INADDR_NONE;
@@ -877,7 +877,7 @@ bool helperUpdateUnderway(const std::string &key, const char *value, configSetti
     // save values...
     strlcpy(firmwareMD5, md5, sizeof(firmwareMD5));
     firmwareSize = atoi(size);
-    for (uint8_t channel = 0; channel < SSE_MAX_CHANNELS; channel++)
+    for (uint32_t channel = 0; channel < SSE_MAX_CHANNELS; channel++)
     {
         if (subscription[channel].SSEconnected && subscription[channel].clientUUID == uuid && subscription[channel].client.connected())
         {
@@ -1054,7 +1054,7 @@ void SSEheartbeat(SSESubscription *s)
     if (s->client.connected())
     {
         static int8_t lastRSSI = 0;
-        static int16_t lastVehicleDistance = 0;
+        static int32_t lastVehicleDistance = 0;
         static char *json = loop_json;
         TAKE_MUTEX();
         START_JSON(json);
@@ -1110,7 +1110,7 @@ void SSEheartbeat(SSESubscription *s)
     }
 }
 
-void SSEHandler(uint8_t channel)
+void SSEHandler(uint32_t channel)
 {
     if (server.args() != 1)
     {
@@ -1141,7 +1141,7 @@ void SSEHandler(uint8_t channel)
 
 void handle_subscribe()
 {
-    uint8_t channel;
+    uint32_t channel;
     IPAddress clientIP = server.client().remoteIP(); // get IP address of client
     std::string SSEurl = restEvents;
 
@@ -1370,7 +1370,7 @@ void SSEBroadcastState(const char *data, BroadcastType type)
     if (subscriptionCount == 0)
         return;
 
-    for (uint8_t i = 0; i < SSE_MAX_CHANNELS; i++)
+    for (uint32_t i = 0; i < SSE_MAX_CHANNELS; i++)
     {
         if (subscription[i].SSEconnected && subscription[i].client.connected())
         {

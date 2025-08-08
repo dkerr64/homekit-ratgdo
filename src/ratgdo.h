@@ -154,10 +154,10 @@ struct __attribute__((aligned(4))) GarageDoor
     bool light;
     LockCurrentState current_lock;
     LockTargetState target_lock;
-    uint16_t openingsCount;
-    uint8_t batteryState;
-    uint16_t openDuration;
-    uint16_t closeDuration;
+    uint32_t openingsCount;
+    uint32_t batteryState;
+    uint32_t openDuration;
+    uint32_t closeDuration;
 #ifndef ESP8266
     // Feature not available on ESP8266
     // TODO implement this
@@ -169,6 +169,6 @@ extern GarageDoor garage_door;
 
 struct __attribute__((aligned(4))) ForceRecover
 {
-    uint8_t push_count;
+    uint32_t push_count;
     _millis_t timeout;
 };

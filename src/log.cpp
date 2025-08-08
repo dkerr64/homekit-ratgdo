@@ -38,7 +38,7 @@ LOG *ratgdoLogger = LOG::getInstance();
 
 void logToSyslog(char *message);
 bool syslogEn = false;
-uint16_t syslogPort = 514;
+uint32_t syslogPort = 514;
 char syslogIP[IP4ADDR_STRLEN_MAX] = "";
 char timestr[16];
 WiFiUDP syslog;
@@ -87,7 +87,7 @@ void esp_log_hook(const char *fmt, va_list args)
 extern "C" uint32_t __crc_len;
 extern "C" uint32_t __crc_val;
 // Keep track of number of times crashed
-int16_t crashCount;
+int32_t crashCount;
 // ESP8266 is single core / single threaded, no mutex's.
 #define TAKE_MUTEX()
 #define GIVE_MUTEX()
@@ -128,7 +128,7 @@ RTC_NOINIT_ATTR logSaveBuffer rtcRebootLog;
 RTC_NOINIT_ATTR logSaveBuffer rtcCrashLog;
 RTC_NOINIT_ATTR time_t rebootTime;
 RTC_NOINIT_ATTR time_t crashTime;
-RTC_NOINIT_ATTR int16_t crashCount;
+RTC_NOINIT_ATTR int32_t crashCount;
 RTC_NOINIT_ATTR char reasonString[64];
 RTC_NOINIT_ATTR char crashVersion[16];
 const int rtcSize = sizeof(rtcRebootLog) + sizeof(rtcCrashLog) + sizeof(rebootTime) + sizeof(crashTime) + sizeof(crashCount) + sizeof(reasonString) + sizeof(crashVersion);
@@ -144,8 +144,8 @@ void panic_handler(arduino_panic_info_t *info, void *arg)
     crashTime = (clockSet) ? time(NULL) : 0;
     esp_rom_printf("Panic Handler, crash count %d\n", crashCount);
     size_t len = sizeof(rtcCrashLog.buffer);
-    uint16_t end = (ratgdoLogger->msgBuffer->head + 1) % sizeof(ratgdoLogger->msgBuffer->buffer); // include the null terminator
-    uint16_t start = (sizeof(ratgdoLogger->msgBuffer->buffer) + end - len) % sizeof(ratgdoLogger->msgBuffer->buffer);
+    uint32_t end = (ratgdoLogger->msgBuffer->head + 1) % sizeof(ratgdoLogger->msgBuffer->buffer); // include the null terminator
+    uint32_t start = (sizeof(ratgdoLogger->msgBuffer->buffer) + end - len) % sizeof(ratgdoLogger->msgBuffer->buffer);
     rtcCrashLog.wrapped = 0;
     rtcCrashLog.head = len - 1; // end of the buffer
     if (start >= ratgdoLogger->msgBuffer->head)
@@ -310,8 +310,8 @@ void LOG::saveMessageLog()
     ESP_LOGI(TAG, "Save message log buffer");
     TAKE_MUTEX();
     size_t len = sizeof(rtcRebootLog.buffer);
-    uint16_t end = (msgBuffer->head + 1) % sizeof(msgBuffer->buffer); // include the null terminator
-    uint16_t start = (sizeof(msgBuffer->buffer) + end - len) % sizeof(msgBuffer->buffer);
+    uint32_t end = (msgBuffer->head + 1) % sizeof(msgBuffer->buffer); // include the null terminator
+    uint32_t start = (sizeof(msgBuffer->buffer) + end - len) % sizeof(msgBuffer->buffer);
     rtcRebootLog.wrapped = 0;
     rtcRebootLog.head = len - 1; // end of the buffer
     if (start >= msgBuffer->head)
