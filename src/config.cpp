@@ -264,7 +264,7 @@ userSettings::userSettings()
 #endif
     strlcpy(device_name, default_device_name, sizeof(device_name));
     make_rfc952(device_name_rfc952, default_device_name, sizeof(device_name_rfc952));
-    IRAM_START
+    IRAM_START(TAG);
     char *localIPBuf = (char *)malloc(IP4ADDR_STRLEN_MAX);
     strlcpy(localIPBuf, "0.0.0.0", 16);
     char *subnetMaskBuf = (char *)malloc(IP4ADDR_STRLEN_MAX);
@@ -330,7 +330,7 @@ userSettings::userSettings()
         {cfg_enableIPv6, {true, false, false, NULL}},
 #endif
     };
-    IRAM_END("Config settings");
+    IRAM_END(TAG);
 }
 
 void userSettings::toStdOut()

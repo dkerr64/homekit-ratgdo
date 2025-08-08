@@ -43,16 +43,19 @@ extern bool get_auto_timezone();
 // need to make more space available for initialization.
 #include <umm_malloc/umm_malloc.h>
 #include <umm_malloc/umm_heap_select.h>
-#define IRAM_START \
-    {              \
-        HeapSelectIram ephemeral;
-#define IRAM_END(location)                                                                \
-    ESP_LOGI("ratgdo-utilities", "Free IRAM heap (%s): %d", location, ESP.getFreeHeap()); \
+#define IRAM_START(tag)           \
+    {                             \
+        HeapSelectIram ephemeral; \
+        ESP_LOGI(tag, "IRAM_START heap (%s): %d", __func__, ESP.getFreeHeap());
+#define IRAM_END(tag)                                                     \
+    ESP_LOGI(tag, "IRAM_END heap (%s): %d", __func__, ESP.getFreeHeap()); \
     }
 #else // MMU_IRAM_HEAP
-#define IRAM_START {
-#define IRAM_END(location)                                                           \
-    ESP_LOGI("ratgdo-utilities", "Free heap (%s): %d", location, ESP.getFreeHeap()); \
+#define IRAM_START(tag) \
+    {                   \
+        ESP_LOGI(tag, "Start heap (%s): %d", __func__, ESP.getFreeHeap());
+#define IRAM_END(tag)                                                \
+    ESP_LOGI(tag, "End heap (%s): %d", __func__, ESP.getFreeHeap()); \
     }
 #endif // MMU_IRAM_HEAP
 

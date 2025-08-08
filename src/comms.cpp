@@ -351,7 +351,7 @@ void setup_comms()
         doorControlType = userConfig->getGDOSecurityType();
 
 #if defined(ESP8266) || !defined(USE_GDOLIB)
-    IRAM_START
+    IRAM_START(TAG);
     // IRAM heap is used only for allocating globals, to leave as much regular heap
     // available during operations.  We need to carefully monitor useage so as not
     // to exceed available IRAM.  We can adjust the LOG_BUFFER_SIZE (in log.h) if we
@@ -422,7 +422,7 @@ void setup_comms()
         ESP_LOGI(TAG, "=== Setting up comms for dry contact protocol");
         pinMode(UART_TX_PIN, OUTPUT);
     }
-    IRAM_END("Comms initialized");
+    IRAM_END(TAG);
 #else // !USE_GDOLIB
     esp_err_t err = ESP_OK;
 

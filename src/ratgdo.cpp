@@ -105,12 +105,6 @@ static bool ping_timed_out = false;
 static esp_ping_handle_t ping;
 static void ping_start();
 static void ping_stop();
-
-// Allows us to intercept all ESP_LOGx() even outside our code.
-void esp_log_hook(const char *fmt, va_list args)
-{
-    ratgdoLogger->logToBuffer(fmt, args);
-}
 #endif
 
 /****************************************************************************
@@ -126,10 +120,6 @@ void setup()
     tone(BEEPER_PIN, 1300, 500);
 #endif // ESP32
     led.on();
-    Serial.begin(115200);
-    while (!Serial)
-        ; // Wait for serial port to open
-    Serial.printf("\n\n\n");
     ESP_LOGI(TAG, "=== Starting RATGDO Homekit version %s", AUTO_VERSION);
 #ifdef ESP8266
     ESP_LOGI(TAG, "%s", ESP.getFullVersion().c_str());

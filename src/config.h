@@ -116,7 +116,6 @@ struct configSetting
 {
     bool reboot;
     bool wifiChanged;
-    // std::variant<bool, int, std::string> value;
     std::variant<bool, int, configStr> value;
     bool (*fn)(const std::string &key, const char *value, configSetting *actions);
 };

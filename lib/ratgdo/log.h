@@ -28,7 +28,7 @@
 // space for other data in here, so during development monitor logs and adjust
 // this smaller if necessary.  IRAM malloc's are all done during startup.
 #ifdef MMU_IRAM_HEAP
-#define LOG_BUFFER_SIZE (1024 * 6)
+#define LOG_BUFFER_SIZE (1024 * 4)
 #else
 #define LOG_BUFFER_SIZE 1024
 #endif
@@ -54,8 +54,8 @@ extern int16_t crashCount;
 
 typedef struct logBuffer
 {
-    uint16_t wrapped;                                              // two bytes
-    uint16_t head;                                                 // two bytes
+    uint32_t wrapped;
+    uint32_t head;
     char buffer[LOG_BUFFER_SIZE - sizeof(wrapped) - sizeof(head)]; // sized so whole struct is LOG_BUFFER_SIZE bytes
 } logBuffer;
 
@@ -136,3 +136,5 @@ public:
     void saveMessageLog();
 };
 extern LOG *ratgdoLogger;
+
+extern void esp_log_hook(const char *fmt, va_list args);

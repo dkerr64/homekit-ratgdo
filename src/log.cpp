@@ -45,6 +45,43 @@ WiFiUDP syslog;
 bool suppressSerialLog = false;
 esp_log_level_t logLevel = ESP_LOG_VERBOSE;
 
+char *toHHMMSSmmm(_millis_t t)
+{
+    uint32_t secs = t / 1000;
+    uint32_t ms = t % 1000;
+    uint32_t mins = secs / 60;
+    secs = secs % 60;
+    uint32_t hrs = mins / 60;
+    mins = mins % 60;
+    snprintf(timestr, sizeof(timestr), "%02d:%02d:%02d.%03d", hrs, mins, secs, ms);
+    return timestr;
+}
+
+// Allows us to intercept all ESP_LOGx() even outside our code.
+void esp_log_hook(const char *fmt, va_list args)
+{
+    if (!Serial)
+    {
+        // Before we can log anything, we need to initialize the serial port.
+        Serial.begin(115200);
+        while (!Serial)
+            ; // Wait for serial port to open
+        Serial.printf("\n\n\n");
+    }
+    if (ratgdoLogger)
+    {
+        ratgdoLogger->logToBuffer(fmt, args);
+    }
+    else if (!suppressSerialLog)
+    {
+        // We should only ever come here if ratgdoLogger has not been constructed
+        // which would only be in very early part of booting the system
+        char buf[64];
+        vsnprintf(buf, 64, fmt, args);
+        Serial.print(buf);
+    }
+}
+
 #ifdef ESP8266
 // These are defined in the linker script, and filled in by the elf2bin.py util
 extern "C" uint32_t __crc_len;
@@ -71,21 +108,19 @@ void crashCallback()
 
 void logToBuffer_P(const char *fmt, ...)
 {
-    if (ratgdoLogger)
-    {
-        va_list args;
-        va_start(args, fmt);
-        ratgdoLogger->logToBuffer(fmt, args);
-        va_end(args);
-    }
+    va_list args;
+    va_start(args, fmt);
+    esp_log_hook(fmt, args);
+    va_end(args);
 }
+
 #else
 // There is 8KB of RTC memory that can be set to not initialize on restart.
 // Data saved here will survive a crash and restart, but will not survive a power interruption.
 typedef struct logSaveBuffer
 {
-    uint16_t wrapped;                                                   // two bytes
-    uint16_t head;                                                      // two bytes
+    uint32_t wrapped;                                                   // two bytes
+    uint32_t head;                                                      // two bytes
     char buffer[LOG_SAVE_BUFFER_SIZE - sizeof(wrapped) - sizeof(head)]; // sized so whole struct is LOG_SAVE_BUFFER_SIZE bytes
 } logSaveBuffer;
 
@@ -133,7 +168,7 @@ LOG::LOG()
 {
 #ifdef ESP8266
     LittleFS.begin();
-    IRAM_START
+    IRAM_START(TAG);
     // IRAM heap is used only for allocating globals, to leave as much regular heap
     // available during operations.  We need to carefully monitor useage so as not
     // to exceed available IRAM.  We can adjust the LOG_BUFFER_SIZE (in log.h) if we
@@ -142,7 +177,7 @@ LOG::LOG()
     lineBuffer = (char *)malloc(LINE_BUFFER_SIZE);
     // Open logMessageFile so we don't have to later.
     logMessageFile = (LittleFS.exists(CRASH_LOG_MSG_FILE)) ? LittleFS.open(CRASH_LOG_MSG_FILE, "r+") : LittleFS.open(CRASH_LOG_MSG_FILE, "w+");
-    IRAM_END("Log buffers allocated");
+    IRAM_END(TAG);
 #else
     logMutex = xSemaphoreCreateRecursiveMutex();
     msgBuffer = (logBuffer *)malloc(sizeof(logBuffer));
@@ -158,17 +193,6 @@ LOG::LOG()
 
 void LOG::logToBuffer(const char *fmt, va_list args)
 {
-    if (!lineBuffer)
-    {
-        static char buf[LINE_BUFFER_SIZE];
-        // parse the format string into lineBuffer
-        vsnprintf(buf, LINE_BUFFER_SIZE, fmt, args);
-        //  print line to the serial port
-        if (!suppressSerialLog)
-            Serial.print(buf);
-        return;
-    }
-
     TAKE_MUTEX();
     // parse the format string into lineBuffer
     vsnprintf(lineBuffer, LINE_BUFFER_SIZE, fmt, args);
@@ -179,18 +203,12 @@ void LOG::logToBuffer(const char *fmt, va_list args)
         char *numptr = &lineBuffer[3];
         char *endptr;
         uint32_t num = strtoll(numptr, &endptr, 10);
-        uint32_t secs = num / 1000;
-        uint32_t ms = num % 1000;
-        uint32_t mins = secs / 60;
-        secs = secs % 60;
-        uint32_t hrs = mins / 60;
-        mins = mins % 60;
-        snprintf(timestr, sizeof(timestr), "%02d:%02d:%02d.%03d", hrs, mins, secs, ms);
-        uint32_t timestrlen = strlen(timestr);
+        char *ts = toHHMMSSmmm(num);
+        uint32_t timestrlen = strlen(ts);
         int32_t diff = timestrlen - (int32_t)(endptr - numptr);
         int32_t max = LINE_BUFFER_SIZE - ((int32_t)(endptr - lineBuffer) + diff);
         memmove(endptr + diff, endptr, max);
-        memcpy(numptr, timestr, timestrlen);
+        memcpy(numptr, ts, timestrlen);
     }
 
     //  print line to the serial port
@@ -362,7 +380,7 @@ void LOG::printMessageLog(Print &outputDev)
     {
         outputDev.printf("Server time: %s\n", timeString());
     }
-    outputDev.printf("Server uptime (secs): %u.%03u\n", (uint32_t)(_millis() / 1000LL), (uint16_t)(_millis() % 1000LL));
+    outputDev.printf("Server uptime: %s\n", toHHMMSSmmm(_millis()));
     outputDev.printf("Firmware version: %s\n", AUTO_VERSION);
 #ifdef ESP8266
     outputDev.write("Flash CRC: 0x");

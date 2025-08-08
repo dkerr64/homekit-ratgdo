@@ -91,7 +91,7 @@ void wifi_connect()
         return;
 
     ESP_LOGI(TAG, "=== Initialize WiFi %s", (softAPmode) ? "Soft Access Point" : "Station");
-    IRAM_START
+    IRAM_START(TAG);
     // IRAM heap is used only for allocating globals, to leave as much regular heap
     // available during operations.  We need to carefully monitor useage so as not
     // to exceed available IRAM.  We can adjust the LOG_BUFFER_SIZE (in log.h) if we
@@ -185,7 +185,7 @@ void wifi_connect()
     wifiConnectStart = _millis();
     wifiConnectActive = true;
     WiFi.begin(); // use credentials stored in flash
-    IRAM_END("Wifi initialized");
+    IRAM_END(TAG);
     wifi_setup_done = true;
 }
 

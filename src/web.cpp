@@ -358,7 +358,7 @@ void setup_web()
         return;
 
     ESP_LOGI(TAG, "=== Starting HTTP web server ===");
-    IRAM_START
+    IRAM_START(TAG);
     // IRAM heap is used only for allocating globals, to leave as much regular heap
     // available during operations.  We need to carefully monitor useage so as not
     // to exceed available IRAM.  We can adjust the LOG_BUFFER_SIZE (in log.h) if we
@@ -444,7 +444,7 @@ void setup_web()
     }
     activeRequestCount = 0;
 
-    IRAM_END("HTTP server started");
+    IRAM_END(TAG);
     web_setup_done = true;
     return;
 }
@@ -1488,8 +1488,8 @@ void handle_firmware_upload()
             // just want to verify without disrupting operation of the HomeKit service.
 #ifdef ESP8266
             arduino_homekit_close();
-            IRAM_START
-            IRAM_END("HomeKit Server Closed");
+            IRAM_START(TAG);
+            IRAM_END(TAG);
 #else
             // TODO close HomeKit server during OTA update...
 #endif
