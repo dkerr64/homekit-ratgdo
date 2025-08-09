@@ -1090,14 +1090,14 @@ void comms_loop_sec1()
                 cmdDelay = 0;
                 if (retryCount++ < MAX_COMMS_RETRY)
                 {
-                    ESP_LOGD(TAG, "transmit failed, will retry");
+                    ESP_LOGD(TAG, "Transmit failed, will retry");
 #ifdef ESP32
                     xQueueSendToFront(pkt_q, &pkt_ac, 0); // ignore errors
 #endif
                 }
                 else
                 {
-                    ESP_LOGE(TAG, "transmit failed, exceeded max retry, aborting");
+                    ESP_LOGW(TAG, "Transmit failed, exceeded max retry");
                     retryCount = 0;
 #ifndef ESP32
                     q_drop(&pkt_q);
@@ -1111,7 +1111,7 @@ void comms_loop_sec1()
         }
         // If we are looping over multiple packets, yield on each loop
         if (msgs > 1)
-            yield();
+            YIELD();
     }
 
     // check for wall panel and provide emulator
@@ -1171,7 +1171,7 @@ void comms_loop_sec2()
 #endif
             // If we are looping over multiple packets, yield on each loop
             if (msgs > 1)
-                yield();
+                YIELD();
         }
     }
     else

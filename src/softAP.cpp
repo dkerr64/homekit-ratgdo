@@ -329,7 +329,7 @@ bool connect_wifi(const char *ssid, const char *password, const uint8_t *bssid)
     while (WiFi.status() != WL_CONNECTED)
     {
         delay(100); // Reduced delay for better responsiveness
-        yield();
+        YIELD();
 
         // Check both attempt count and total time to prevent watchdog timeout
         if (count > MAX_ATTEMPTS_WIFI_CONNECTION || (_millis() - start_time) > 10000) // 10 second timeout

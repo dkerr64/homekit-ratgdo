@@ -28,7 +28,7 @@
 // space for other data in here, so during development monitor logs and adjust
 // this smaller if necessary.  IRAM malloc's are all done during startup.
 #ifdef MMU_IRAM_HEAP
-#define LOG_BUFFER_SIZE (1024 * 4)
+#define LOG_BUFFER_SIZE (512 * 11)
 #else
 #define LOG_BUFFER_SIZE 1024
 #endif

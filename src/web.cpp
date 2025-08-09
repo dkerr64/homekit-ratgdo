@@ -762,6 +762,7 @@ void handle_status()
     ADD_INT(json, "webDroppedConns", dropped_connections);
     ADD_INT(json, "webMaxResponseTime", max_response_time);
     END_JSON(json);
+    YIELD();
     // send JSON straight to serial port
     Serial.printf("%s\n", json);
 
@@ -985,6 +986,7 @@ void handle_setgdo()
             ESP_LOGW(TAG, "Invalid Key: %s, Value: %s (F)", key, value);
             error = true;
         }
+        YIELD();
         if (error)
             break;
     }
@@ -1088,6 +1090,7 @@ void SSEheartbeat(SSESubscription *s)
             ESP_LOGW(TAG, "WARNING heartbeat JSON length: %d is over 80%% of available buffer", strlen(json));
         }
         REMOVE_NL(json);
+        YIELD();
         // retry needed to before event:
         s->client.printf("retry: 15000\nevent: message\ndata: %s\n\n", json);
         GIVE_MUTEX();
@@ -1107,6 +1110,7 @@ void SSEheartbeat(SSESubscription *s)
         s->clientIP = INADDR_NONE;
         s->clientUUID.clear();
         s->SSEconnected = false;
+        YIELD();
     }
 }
 
@@ -1388,6 +1392,7 @@ void SSEBroadcastState(const char *data, BroadcastType type)
                 subscription[i].client.printf_P(PSTR("event: message\ndata: %s\n\n"), data);
             }
         }
+        YIELD();
     }
 }
 
@@ -1572,9 +1577,5 @@ void handle_firmware_upload()
             Update.end();
         ESP_LOGI(TAG, "%s was aborted", verify ? "Verify" : "Update");
     }
-#ifdef ESP8266
-    esp_yield();
-#else
-    delay(0);
-#endif
+    YIELD();
 }

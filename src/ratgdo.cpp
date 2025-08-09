@@ -91,14 +91,7 @@ void service_timer_loop();
 #define WIFI_CONNECT_TIMEOUT (30 * 1000)
 static _millis_t wifiConnectTimeout = 0;
 
-#ifdef ESP8266
-Ticker watchdogTicker;
-void IRAM_ATTR watchdogReset()
-{
-    ESP.wdtFeed();
-}
-
-#else
+#ifndef ESP8266
 // on ESP8266 ping is implemented in wifi.cpp
 static bool ping_failure = false;
 static bool ping_timed_out = false;
@@ -127,10 +120,6 @@ void setup()
     ESP_LOGI(TAG, "Flash chip mode 0x%X", ESP.getFlashChipMode());
     ESP_LOGI(TAG, "Flash chip speed 0x%X (%d MHz)", ESP.getFlashChipSpeed(), ESP.getFlashChipSpeed() / 1000000);
     ESP_LOGI(TAG, "Free heap: %d", ESP.getFreeHeap());
-    // Enable hardware watchdog
-    ESP.wdtEnable(19000);
-    // Setup software watchdog to feed hardware watchdog
-    watchdogTicker.attach(9, watchdogReset);
     // Load users saved configuration (or set defaults)
     load_all_config_settings();
     // Now set log level to whatever user has requested
@@ -209,13 +198,17 @@ void loop()
         // that this improves stability.
         setup_homekit();
     }
+    YIELD();
     homekit_loop();
 #else
     // On ESP32 Wifi is handled within HomeSpan library which has its own freeRTOS task
     // Features not available on ESP8266
+    YIELD();
     vehicle_loop();
 #endif
+    YIELD();
     web_loop();
+    YIELD();
     improv_loop();
     soft_ap_loop();
     service_timer_loop();

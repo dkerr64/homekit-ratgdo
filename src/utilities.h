@@ -24,9 +24,11 @@
 #ifdef ESP8266
 typedef unsigned long _millis_t;
 #define _millis() ((_millis_t)millis())
+#define YIELD() esp_yield()
 #else
 typedef unsigned long long _millis_t;
 #define _millis() ((_millis_t)(esp_timer_get_time() / 1000ULL))
+#define YIELD() delay(1)
 #endif
 
 extern time_t clockSet;

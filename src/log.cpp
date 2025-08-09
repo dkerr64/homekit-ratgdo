@@ -128,10 +128,12 @@ RTC_NOINIT_ATTR logSaveBuffer rtcRebootLog;
 RTC_NOINIT_ATTR logSaveBuffer rtcCrashLog;
 RTC_NOINIT_ATTR time_t rebootTime;
 RTC_NOINIT_ATTR time_t crashTime;
+RTC_NOINIT_ATTR _millis_t crashUpTime;
 RTC_NOINIT_ATTR int32_t crashCount;
 RTC_NOINIT_ATTR char reasonString[64];
 RTC_NOINIT_ATTR char crashVersion[16];
-const int rtcSize = sizeof(rtcRebootLog) + sizeof(rtcCrashLog) + sizeof(rebootTime) + sizeof(crashTime) + sizeof(crashCount) + sizeof(reasonString) + sizeof(crashVersion);
+const int rtcSize = sizeof(rtcRebootLog) + sizeof(rtcCrashLog) + sizeof(rebootTime) + sizeof(crashTime) + sizeof(crashUpTime) +
+                    sizeof(crashCount) + sizeof(reasonString) + sizeof(crashVersion);
 
 #define TAKE_MUTEX() xSemaphoreTakeRecursive(logMutex, portMAX_DELAY)
 #define GIVE_MUTEX() xSemaphoreGiveRecursive(logMutex)
@@ -140,6 +142,7 @@ void panic_handler(arduino_panic_info_t *info, void *arg)
 {
     // crashCount could be negative... indicating that there is a core dump image, but no saved crash log.
     // But now we are saving a crash log, so need to make sure it is positive.
+    crashUpTime = _millis();
     crashCount = (crashCount < 0) ? 1 : crashCount + 1;
     crashTime = (clockSet) ? time(NULL) : 0;
     esp_rom_printf("Panic Handler, crash count %d\n", crashCount);
@@ -257,6 +260,7 @@ void LOG::printCrashLog(Print &outputDev)
     if (crashCount > 0)
     {
         outputDev.printf("Time of crash: %s\n", timeString(crashTime));
+        outputDev.printf("UpTime at crash: %s\n", toHHMMSSmmm(crashUpTime));
         outputDev.printf("Crash reason: %s\n", reasonString);
         outputDev.printf("Firmware version: %s\n\n", crashVersion);
         // head points to a zero (null terminator of previous log line) which we need to skip.
@@ -276,7 +280,7 @@ void LOG::printCrashLog(Print &outputDev)
             if (esp_core_dump_get_summary(summary) == ESP_OK)
             {
                 if (crashCount <= 0)
-                    outputDev.print("No saved crash log available for core dump.");
+                    outputDev.print("No saved message log available.\n");
 
                 outputDev.print("\n\n");
                 outputDev.printf("Crash in task: %s, at address: 0x%08lX\n", summary->exc_task, summary->exc_pc);
@@ -295,8 +299,8 @@ void LOG::printCrashLog(Print &outputDev)
                 outputDev.print("\n\n");
                 outputDev.print("Make sure that the ELF file matches the binary that crashed.\n");
             }
+            free(summary);
         }
-        free(summary);
     }
     else
     {
