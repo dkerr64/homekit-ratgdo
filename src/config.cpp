@@ -232,6 +232,7 @@ bool helperLaser(const std::string &key, const char *value, configSetting *actio
     return true;
 }
 
+#ifdef USE_GDOLIB
 bool helperUseSWserial(const std::string &key, const char *value, configSetting *action)
 {
     // We must shutdown the GDOLIB tasks before changing the useSWserial setting.
@@ -239,6 +240,7 @@ bool helperUseSWserial(const std::string &key, const char *value, configSetting 
     userConfig->set(key, value);
     return true;
 }
+#endif
 
 bool helperOccupancyDuration(const std::string &key, const char *value, configSetting *action)
 {
@@ -325,7 +327,9 @@ userSettings::userSettings()
         {cfg_laserEnabled, {false, false, false, helperLaser}},
         {cfg_laserHomeKit, {false, false, true, helperLaser}}, // call fn to enable/disable HomeKit accessories
         {cfg_assistDuration, {false, false, 60, NULL}},
-        {cfg_useSWserial, {true, false, true, helperUseSWserial}},           // call fn to shut down GDO before switch
+#ifdef USE_GDOLIB
+        {cfg_useSWserial, {true, false, true, helperUseSWserial}}, // call fn to shut down GDO before switch
+#endif
         {cfg_occupancyDuration, {false, false, 0, helperOccupancyDuration}}, // call fn to enable/disable HomeKit accessories
         {cfg_enableIPv6, {true, false, false, NULL}},
 #endif
