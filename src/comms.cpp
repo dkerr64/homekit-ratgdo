@@ -610,7 +610,10 @@ void wallPlate_Emulation()
 
     if (!serialDetected)
     {
-        serialDetected = currentMillis;
+        if (sw_serial.available())
+        {
+            serialDetected = currentMillis;
+        }
         return;
     }
 
@@ -1029,10 +1032,10 @@ void comms_loop_sec1()
     uint32_t msgs;
 
 #ifdef ESP32
-    while ((msgs = uxQueueMessagesWaiting(pkt_q)) > 0)
+    if ((msgs = uxQueueMessagesWaiting(pkt_q)) > 0)
     {
 #else
-    while ((msgs = (uint32_t)!q_isEmpty(&pkt_q)) > 0)
+    if ((msgs = (uint32_t)!q_isEmpty(&pkt_q)) > 0)
     {
 #endif
         now = _millis();
@@ -1149,14 +1152,14 @@ void comms_loop_sec2()
 
                 if (retryCount++ < MAX_COMMS_RETRY)
                 {
-                    ESP_LOGD(TAG, "transmit failed, will retry");
+                    ESP_LOGD(TAG, "Transmit failed, will retry");
 #ifdef ESP32
                     xQueueSendToFront(pkt_q, &pkt_ac, 0); // ignore errors
 #endif
                 }
                 else
                 {
-                    ESP_LOGE(TAG, "transmit failed, exceeded max retry, aborting");
+                    ESP_LOGE(TAG, "Transmit failed, exceeded max retry");
                     retryCount = 0;
 #ifndef ESP32
                     q_drop(&pkt_q);

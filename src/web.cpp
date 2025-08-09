@@ -164,9 +164,9 @@ static unsigned long dropped_connections = 0;
 
 // JSON response caching
 #ifdef ESP8266
-#define STATUS_JSON_BUFFER_SIZE 1536
+#define STATUS_JSON_BUFFER_SIZE (256 * 7)
 #else
-#define STATUS_JSON_BUFFER_SIZE 2048
+#define STATUS_JSON_BUFFER_SIZE (256 * 8)
 #endif
 #define STATUS_JSON_CACHE_TIMEOUT_MS 500
 #define LOOP_JSON_BUFFER_SIZE 512
@@ -954,7 +954,7 @@ void handle_setgdo()
 
         if (setGDOhandlers.count(key))
         {
-            ESP_LOGI(TAG, "Call handler for Key: %s, Value: %s", key, value);
+            ESP_LOGI(TAG, "Call handler for Key: %s, Value: %s", key.c_str(), value.c_str());
             actions = setGDOhandlers.at(key);
             if (actions.fn)
             {
@@ -965,7 +965,7 @@ void handle_setgdo()
         }
         else if (userConfig->contains(key))
         {
-            ESP_LOGI(TAG, "Configuration set for Key: %s, Value: %s", key, value);
+            ESP_LOGI(TAG, "Configuration set for Key: %s, Value: %s", key.c_str(), value.c_str());
             actions = userConfig->getDetail(key);
             if (actions.fn)
             {
@@ -983,7 +983,7 @@ void handle_setgdo()
         }
         else
         {
-            ESP_LOGW(TAG, "Invalid Key: %s, Value: %s (F)", key, value);
+            ESP_LOGW(TAG, "Invalid Key: %s, Value: %s (F)", key.c_str(), value.c_str());
             error = true;
         }
         YIELD();
