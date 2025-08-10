@@ -139,8 +139,9 @@ function toggleSyslog() {
 function toggleDCOpenClose(radio) {
     let value = radio.value;
     document.getElementById("dcOpenCloseRow").style.display = (value != 3) ? "table-row" : "none";
-    // TODO no s/w serial setting for ESP8266
-    document.getElementById("useSWserialRow").style.display = (value != 3) ? "table-row" : "none";
+    if (serverStatus["useSWserial"] != undefined) {
+        document.getElementById("useSWserialRow").style.display = (value != 3) ? "table-row" : "none";
+    }
     document.getElementById("obstFromStatusRow").style.display = (value != 3) ? "table-row" : "none";
     document.getElementById("dcDebounceDurationRow").style.display = (value == 3) ? "table-row" : "none";
     document.getElementById("useToggleToCloseRow").style.display = (value == 2) ? "table-row" : "none";
@@ -246,9 +247,9 @@ function setElementsFromStatus(status) {
                 document.getElementById("lockLightRow").style.display = (value != 3) ? "table-row" : "none";
                 document.getElementById("durationRow").style.display = (value != 3) ? "table-row" : "none";
                 document.getElementById("dcOpenCloseRow").style.display = (value != 3) ? "table-row" : "none";
-                // TODO no s/w serial setting for ESP8266
-                document.getElementById("useSWserialRow").style.display = (value != 3) ? "table-row" : "none";
-                // Hide obstFromStatus if it is already set... we want to allow turning on, but not turning off.
+                if (serverStatus["useSWserial"] != undefined) {
+                    document.getElementById("useSWserialRow").style.display = (value != 3) ? "table-row" : "none";
+                }
                 document.getElementById("obstFromStatusRow").style.display = (value != 3) ? "table-row" : "none";
                 document.getElementById("dcDebounceDurationRow").style.display = (value == 3) ? "table-row" : "none";
                 document.getElementById("useToggleToCloseRow").style.display = (value == 2) ? "table-row" : "none";

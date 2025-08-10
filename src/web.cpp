@@ -742,7 +742,9 @@ void handle_status()
     ADD_BOOL(json, cfg_enableIPv6, userConfig->getEnableIPv6());
     ADD_STR(json, "ipv6Addresses", ipv6_addresses);
     ADD_BOOL(json, cfg_builtInTTC, userConfig->getBuiltInTTC());
+#ifdef USE_GDOLIB
     ADD_BOOL(json, cfg_useSWserial, userConfig->getUseSWserial());
+#endif
     ADD_BOOL(json, "distanceSensor", garage_door.has_distance_sensor);
     if (garage_door.has_distance_sensor)
     {
