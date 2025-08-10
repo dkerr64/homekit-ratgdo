@@ -28,6 +28,8 @@ extern void notify_homekit_light(bool state);
 extern void enable_service_homekit_motion(bool reboot);
 extern void notify_homekit_motion(bool state);
 
+extern char qrPayload[];
+
 #ifdef ESP8266
 // On ESP8266 we have our own HomeKit module
 void homekit_loop();
@@ -65,7 +67,6 @@ extern void notify_homekit_room_occupancy(bool occupied);
 extern void homekit_unpair();
 extern bool homekit_is_paired();
 
-extern char qrPayload[];
 extern char ipv6_addresses[];
 
 struct GDOEvent

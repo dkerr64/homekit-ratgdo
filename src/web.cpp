@@ -711,10 +711,7 @@ void handle_status()
     ADD_BOOL(json, cfg_dcOpenClose, userConfig->getDCOpenClose());
     ADD_BOOL(json, cfg_obstFromStatus, userConfig->getObstFromStatus());
     ADD_INT(json, cfg_dcDebounceDuration, userConfig->getDCDebounceDuration());
-#ifndef ESP8266
-    // TODO add to ESP8266
     ADD_STR(json, "qrPayload", qrPayload);
-#endif
     if (doorControlType == 2)
     {
         ADD_INT(json, "batteryState", garage_door.batteryState);

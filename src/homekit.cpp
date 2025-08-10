@@ -14,6 +14,8 @@ static const char *TAG = "ratgdo-homekit";
 
 bool homekit_setup_done = false;
 
+char qrPayload[21];
+
 // Forward-declare setters used by characteristics
 homekit_value_t current_door_state_get();
 homekit_value_t target_door_state_get();
@@ -25,6 +27,35 @@ homekit_value_t target_lock_state_get();
 void target_lock_state_set(const homekit_value_t new_value);
 homekit_value_t light_state_get();
 void light_state_set(const homekit_value_t value);
+
+/****************************************************************************
+ * Convert a decimal number to base62 (so can use A-Za-z0-9 to represent it.
+ */
+char *toBase62(char *base62, size_t len, uint32_t base10)
+{
+    static const char base62Chars[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    size_t i = 0;
+    // Will pad with zeros until base62 buffer filled (to len)
+    while ((base10 > 0) || (i < len - 1))
+    {
+        base62[i++] = base62Chars[base10 % 62];
+        base10 /= 62;
+    }
+    // null terminate
+    base62[i] = 0;
+    // Now reverse order of the string;
+    char *str = base62;
+    char *end = str + strlen(str) - 1;
+    while (str < end)
+    {
+        *str ^= *end;
+        *end ^= *str;
+        *str ^= *end;
+        str++;
+        end--;
+    }
+    return base62;
+}
 
 /********************************** MAIN LOOP CODE *****************************************/
 
@@ -55,6 +86,26 @@ void setup_homekit()
     target_lock_state.setter = target_lock_state_set;
     light_state.getter = light_state_get;
     light_state.setter = light_state_set;
+
+    // Generate a QR Code ID from our MAC address, which should create unique pairing QR codes
+    // for each of multiple devices on a network... although we do have to clip to 4 characters,
+    // so we loose ~2 most significant bits.
+    uint8_t mac[WL_MAC_ADDR_LENGTH];
+    WiFi.macAddress(mac);
+    uint32_t uid = (mac[3] << 16) + (mac[4] << 8) + mac[5];
+    static char HKpassword[] = "251-02-023"; // On Oct 25, 2023, Chamberlain announced they were disabling API
+                                             // access for "unauthorized" third parties.
+    static char setupID[6];
+    toBase62(setupID, sizeof(setupID), uid); // always includes leading zeros
+    // setupID will be string "0ABCD" plus null terminator.  We throw away the first char.
+    ESP_LOGI(TAG, "HomeKit pairing QR Code ID: %s", &setupID[1]);
+    // X-HM://0042WZMX3 + setupID... string is constant, precalculated from 25102023
+    // and Category::GarageDoorOpeners in the HomeSpan version of setup code.
+    strlcpy(qrPayload, "X-HM://0042WZMX3", sizeof(qrPayload));
+    sprintf(&qrPayload[16], "%-4.4s", &setupID[1]);
+    ESP_LOGI(TAG, "HomeKit QR setup payload: %s", qrPayload);
+    config.password = HKpassword;
+    config.setupId = &setupID[1];
 
     garage_door.has_motion_sensor = (bool)read_int_from_file(nvram_has_motion);
     if (!garage_door.has_motion_sensor && (userConfig->getMotionTriggers() == 0))
