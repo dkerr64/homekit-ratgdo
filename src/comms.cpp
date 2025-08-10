@@ -2175,6 +2175,8 @@ bool set_light(bool value, bool verify)
         {
             ESP_LOGE(TAG, "packet queue full, dropping light pkt");
         }
+        if (verify)
+            send_get_status();
     }
     return true;
 }
