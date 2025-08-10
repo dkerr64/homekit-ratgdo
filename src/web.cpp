@@ -733,7 +733,7 @@ void handle_status()
 #define clientCount arduino_homekit_get_running_server() ? arduino_homekit_get_running_server()->nfds : 0
     ADD_STR(json, "accessoryID", accessoryID);
     ADD_INT(json, "clients", clientCount);
-    ADD_BOOL(json, "lockedAP", wifiConf.bssid_set)
+    ADD_BOOL(json, "lockedAP", wifiConf.bssid_set);
     ADD_INT(json, "wifiPhyMode", userConfig->getWifiPhyMode());
     ADD_INT(json, "wifiPower", userConfig->getWifiPower());
     ADD_INT(json, "minStack", ESP.getFreeContStack());
