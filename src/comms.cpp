@@ -604,21 +604,12 @@ void wallPlate_Emulation()
 
     _millis_t currentMillis = _millis();
     static _millis_t lastRequestMillis = 0;
-    static _millis_t serialDetected = 0;
+    static _millis_t startMillis = currentMillis;
     static bool emulateWallPanel = false;
     static uint8_t stateIndex = 0;
 
-    if (!serialDetected)
-    {
-        if (sw_serial.available())
-        {
-            serialDetected = currentMillis;
-        }
-        return;
-    }
-
     // wait up to 15 seconds to look for an existing wallplate or it could be booting, so need to wait
-    if (currentMillis - serialDetected < SECPLUS1_DIGITAL_WALLPLATE_TIMEOUT || wallplateBooting == true)
+    if (currentMillis - startMillis < SECPLUS1_DIGITAL_WALLPLATE_TIMEOUT || wallplateBooting == true)
     {
         if (currentMillis - lastRequestMillis > 1000)
         {
@@ -732,7 +723,7 @@ void comms_loop_sec1()
                 gotMessage = true;
             }
 
-            if (gotMessage == false && ((int32_t)(_millis() - last_rx) > 100))
+            if (gotMessage == false && ((_millis() - last_rx) > 100))
             {
                 ESP_LOGI(TAG, "RX message timeout");
                 // if we have a partial packet and it's been over 100ms since last byte was read,
@@ -804,7 +795,7 @@ void comms_loop_sec1()
                 // best attempt to trap invalid values (due to collisions)
                 if (((val & 0xF0) != 0x00) && ((val & 0xF0) != 0x50) && ((val & 0xF0) != 0xB0))
                 {
-                    ESP_LOGD(TAG, "0x38 val upper nible not 0x0 or 0x5 or 0xB: %02X", val);
+                    ESP_LOGI(TAG, "0x38 val upper nible not 0x0 or 0x5 or 0xB: %02X", val);
                     break;
                 }
 
@@ -966,7 +957,7 @@ void comms_loop_sec1()
                 // upper nibble must be 5
                 if ((val & 0xF0) != 0x50)
                 {
-                    ESP_LOGD(TAG, "0x3A val upper nible not 5: %02X", val);
+                    ESP_LOGI(TAG, "0x3A val upper nible not 5: %02X", val);
                     break;
                 }
 
@@ -1033,11 +1024,10 @@ void comms_loop_sec1()
 
 #ifdef ESP32
     if ((msgs = uxQueueMessagesWaiting(pkt_q)) > 0)
-    {
 #else
     if ((msgs = (uint32_t)!q_isEmpty(&pkt_q)) > 0)
-    {
 #endif
+    {
         now = _millis();
         /*
         // if there is no wall panel, no need to check 200ms since last rx
@@ -1073,42 +1063,41 @@ void comms_loop_sec1()
             // Three packets in the queue is normal (e.g. light press, light release, followed by get status)
             // but more than that may indicate a problem
             if (msgs > 3)
-                ESP_LOGE(TAG, "WARNING: message packets in queue is > 3 (%lu)", msgs);
-#ifdef ESP32
-            xQueueReceive(pkt_q, &pkt_ac, 0); // ignore errors
-#else
+                ESP_LOGW(TAG, "WARNING: message packets in queue is > 3 (%lu)", msgs);
+#ifdef ESP8266
             if (q_peek(&pkt_q, &pkt_ac))
             {
+#else
+            xQueueReceive(pkt_q, &pkt_ac, 0); // ignore errors
 #endif
-            if (process_PacketAction(pkt_ac))
-            {
-                // get next delay "between" transmits
-                cmdDelay = pkt_ac.delay;
-#ifndef ESP32
-                q_drop(&pkt_q);
-#endif
-            }
-            else
-            {
-                cmdDelay = 0;
-                if (retryCount++ < MAX_COMMS_RETRY)
+                if (process_PacketAction(pkt_ac))
                 {
-                    ESP_LOGD(TAG, "Transmit failed, will retry");
-#ifdef ESP32
-                    xQueueSendToFront(pkt_q, &pkt_ac, 0); // ignore errors
+                    // get next delay "between" transmits
+                    cmdDelay = pkt_ac.delay;
+#ifdef ESP8266
+                    q_drop(&pkt_q);
 #endif
                 }
                 else
                 {
-                    ESP_LOGW(TAG, "Transmit failed, exceeded max retry");
-                    retryCount = 0;
-#ifndef ESP32
-                    q_drop(&pkt_q);
-#endif
-                }
-            }
+                    cmdDelay = 0;
+                    if (retryCount++ < MAX_COMMS_RETRY)
+                    {
+                        ESP_LOGD(TAG, "Transmit failed, will retry");
 #ifdef ESP32
-#else
+                        xQueueSendToFront(pkt_q, &pkt_ac, 0); // ignore errors
+#endif
+                    }
+                    else
+                    {
+                        ESP_LOGE(TAG, "Transmit failed, exceeded max retry");
+                        retryCount = 0;
+#ifdef ESP8266
+                        q_drop(&pkt_q);
+#endif
+                    }
+                }
+#ifdef ESP8266
             }
 #endif
         }
@@ -1116,7 +1105,6 @@ void comms_loop_sec1()
         if (msgs > 1)
             YIELD();
     }
-
     // check for wall panel and provide emulator
     wallPlate_Emulation();
 }
@@ -1128,28 +1116,28 @@ void comms_loop_sec2()
 {
     static uint32_t retryCount = 0;
 
-    // no incoming data, check if we have command queued
     if (!sw_serial.available())
     {
+        // no incoming data, check if we have command queued
         PacketAction pkt_ac;
         uint32_t msgs;
-#ifdef ESP32
-        while ((msgs = uxQueueMessagesWaiting(pkt_q)) > 0)
-#else
+
+#ifdef ESP8266
         while ((msgs = (uint32_t)q_peek(&pkt_q, &pkt_ac)) > 0)
+#else
+        while ((msgs = uxQueueMessagesWaiting(pkt_q)) > 0)
 #endif
         {
             // Two packets in the queue is normal (e.g. set light followed by get status)
             // but more than that may indicate a problem
             if (msgs > 2)
-                ESP_LOGE(TAG, "WARNING: message packets in queue is > 2 (%lu)", msgs);
+                ESP_LOGW(TAG, "WARNING: message packets in queue is > 2 (%lu)", msgs);
 
 #ifdef ESP32
             xQueueReceive(pkt_q, &pkt_ac, 0); // ignore errors
 #endif
             if (!process_PacketAction(pkt_ac))
             {
-
                 if (retryCount++ < MAX_COMMS_RETRY)
                 {
                     ESP_LOGD(TAG, "Transmit failed, will retry");
@@ -1161,12 +1149,12 @@ void comms_loop_sec2()
                 {
                     ESP_LOGE(TAG, "Transmit failed, exceeded max retry");
                     retryCount = 0;
-#ifndef ESP32
+#ifdef ESP8266
                     q_drop(&pkt_q);
 #endif
                 }
             }
-#ifndef ESP32
+#ifdef ESP8266
             else
             {
                 q_drop(&pkt_q);
@@ -1393,10 +1381,10 @@ void comms_loop_sec2()
                     motionTriggers.bit.motion = 1;
                     userConfig->set(cfg_motionTriggers, motionTriggers.asInt);
                     ESP8266_SAVE_CONFIG();
-#ifdef ESP32
-                    enable_service_homekit_motion(false); // ESP32 with HomeSpan can do this without reboot
-#else
+#ifdef ESP8266
                     enable_service_homekit_motion(true);
+#else
+                    enable_service_homekit_motion(false); // ESP32 with HomeSpan can do this without reboot
 #endif
                 }
 
@@ -1795,11 +1783,11 @@ void door_command(DoorAction action)
         data.value.door_action.id = 1;
 
         Packet pkt = Packet(PacketCommand::DoorAction, data, id_code);
-        PacketAction pkt_ac = {pkt, false, 250}; // 250ms delay for SECURITY1.0
-#ifdef ESP32
-        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
-#else
+        PacketAction pkt_ac = {pkt, false, 250}; // 250ms delay
+#ifdef ESP8266
         if (!q_push(&pkt_q, &pkt_ac))
+#else
+        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
 #endif
         {
             ESP_LOGE(TAG, "packet queue full, dropping door command pressed pkt");
@@ -1808,28 +1796,15 @@ void door_command(DoorAction action)
         // do button release
         pkt_ac.pkt.m_data.value.door_action.pressed = false;
         pkt_ac.inc_counter = true;
-        pkt_ac.delay = 40; // 40ms delay for SECURITY1.0
-#ifdef ESP32
-        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
-#else
+        pkt_ac.delay = 0;
+#ifdef ESP8266
         if (!q_push(&pkt_q, &pkt_ac))
+#else
+        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
 #endif
         {
             ESP_LOGE(TAG, "packet queue full, dropping door command release pkt");
         }
-        // when observing wall panel 2 releases happen, so we do the same
-        if (doorControlType == 1)
-        {
-#ifdef ESP32
-            if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
-#else
-            if (!q_push(&pkt_q, &pkt_ac))
-#endif
-            {
-                ESP_LOGE(TAG, "packet queue full, dropping door command release pkt");
-            }
-        }
-
         send_get_status();
     }
     else
@@ -1842,7 +1817,8 @@ void door_command(DoorAction action)
     }
 }
 
-#endif
+#endif // not USE_GDOLIB
+
 void door_command_close()
 {
     if (garage_door.current_state == GarageDoorCurrentState::CURR_OPEN && userConfig->getUseToggleToClose())
@@ -1898,6 +1874,7 @@ GarageDoorCurrentState open_door()
 #ifdef USE_GDOLIB
     if (doorControlType == 2 && userConfig->getBuiltInTTC())
         gdo_set_time_to_close(0);
+
     gdo_door_open();
 #else
     door_command(DoorAction::Open);
@@ -2005,11 +1982,12 @@ GarageDoorCurrentState close_door()
             }
 #else
             delayFnCall(userConfig->getTTCseconds() * 1000, door_command_close);
-#endif
+#endif // USE_GDOLIB
         }
     }
     return GarageDoorCurrentState::CURR_CLOSING;
 }
+
 #ifndef USE_GDOLIB
 void send_get_status()
 {
@@ -2021,10 +1999,10 @@ void send_get_status()
         d.value.no_data = NoData();
         Packet pkt = Packet(PacketCommand::GetStatus, d, id_code);
         PacketAction pkt_ac = {pkt, true};
-#ifdef ESP32
-        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
-#else
+#ifdef ESP8266
         if (!q_push(&pkt_q, &pkt_ac))
+#else
+        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
 #endif
         {
             ESP_LOGE(TAG, "packet queue full, dropping get status pkt");
@@ -2042,10 +2020,10 @@ void send_get_openings()
         d.value.no_data = NoData();
         Packet pkt = Packet(PacketCommand::GetOpenings, d, id_code);
         PacketAction pkt_ac = {pkt, true};
-#ifdef ESP32
-        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
-#else
+#ifdef ESP8266
         if (!q_push(&pkt_q, &pkt_ac))
+#else
+        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
 #endif
         {
             ESP_LOGE(TAG, "packet queue full, dropping get status pkt");
@@ -2091,42 +2069,25 @@ bool set_lock(bool value, bool verify)
     // SECURITY1.0
     if (doorControlType == 1)
     {
-        // this emulates the "lock" button press+release
-        // - PRESS (0x34)
-        // - DELAY 3000ms
-        // - RELEASE (0x35)
-        // - DELAY 40ms
-        // - RELEASE (0x35)
-        // - DELAY 40ms
-
         data.value.lock.pressed = true;
         Packet pkt = Packet(PacketCommand::Lock, data, id_code);
-        PacketAction pkt_ac = {pkt, true, 3000}; // 3000ms delay for SECURITY1.0
+        PacketAction pkt_ac = {pkt, true, 250}; // 250ms delay
 
-#ifdef ESP32
-        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
-#else
+#ifdef ESP8266
         if (!q_push(&pkt_q, &pkt_ac))
+#else
+        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
 #endif
         {
             ESP_LOGE(TAG, "packet queue full, dropping lock pkt");
         }
         // button release
         pkt_ac.pkt.m_data.value.lock.pressed = false;
-        pkt_ac.delay = 40; // 40ms delay for SECURITY1.0
-                           // observed the wall plate does 2 releases, so we will too
-#ifdef ESP32
-        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
-#else
+        pkt_ac.delay = 0;
+#ifdef ESP8266
         if (!q_push(&pkt_q, &pkt_ac))
-#endif
-        {
-            ESP_LOGE(TAG, "packet queue full, dropping lock pkt");
-        }
-#ifdef ESP32
-        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
 #else
-        if (!q_push(&pkt_q, &pkt_ac))
+        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
 #endif
         {
             ESP_LOGE(TAG, "packet queue full, dropping lock pkt");
@@ -2137,11 +2098,10 @@ bool set_lock(bool value, bool verify)
     {
         Packet pkt = Packet(PacketCommand::Lock, data, id_code);
         PacketAction pkt_ac = {pkt, true};
-
-#ifdef ESP32
-        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
-#else
+#ifdef ESP8266
         if (!q_push(&pkt_q, &pkt_ac))
+#else
+        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
 #endif
         {
             ESP_LOGE(TAG, "packet queue full, dropping lock pkt");
@@ -2149,7 +2109,7 @@ bool set_lock(bool value, bool verify)
     }
     return true;
 }
-#endif
+#endif // USE_GDOLIB
 
 #ifdef USE_GDOLIB
 bool set_light(bool value, bool verify)
@@ -2170,7 +2130,6 @@ bool set_light(bool value, bool verify)
         ESP_LOGI(TAG, "Light already %s; ignored request", (value) ? "on" : "off");
         return false;
     }
-
     PacketData data;
     data.type = PacketDataType::Light;
     data.value.light.light = (value) ? LightState::On : LightState::Off;
@@ -2180,41 +2139,24 @@ bool set_light(bool value, bool verify)
     if (doorControlType == 1)
     {
         // this emulates the "light" button press+release
-        // - PRESS (0x32)
-        // - DELAY 250ms
-        // - RELEASE (0x33)
-        // - DELAY 40ms
-        // - RELEASE (0x33)
-        // - DELAY 40ms
         data.value.light.pressed = true;
-
         Packet pkt = Packet(PacketCommand::Light, data, id_code);
-        PacketAction pkt_ac = {pkt, true, 250}; // 250ms delay for SECURITY1.0
-
-#ifdef ESP32
-        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
-#else
+        PacketAction pkt_ac = {pkt, true, 100}; // 100ms delay
+#ifdef ESP8266
         if (!q_push(&pkt_q, &pkt_ac))
+#else
+        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
 #endif
         {
             ESP_LOGE(TAG, "packet queue full, dropping light pkt");
         }
         // button release
         pkt_ac.pkt.m_data.value.light.pressed = false;
-        pkt_ac.delay = 40; // 40ms delay for SECURITY1.0
-                           // observed the wall plate does 2 releases, so we will too
-#ifdef ESP32
-        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
-#else
+        pkt_ac.delay = 0;
+#ifdef ESP8266
         if (!q_push(&pkt_q, &pkt_ac))
-#endif
-        {
-            ESP_LOGE(TAG, "packet queue full, dropping light pkt");
-        }
-#ifdef ESP32
-        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
 #else
-        if (!q_push(&pkt_q, &pkt_ac))
+        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
 #endif
         {
             ESP_LOGE(TAG, "packet queue full, dropping light pkt");
@@ -2225,11 +2167,10 @@ bool set_light(bool value, bool verify)
     {
         Packet pkt = Packet(PacketCommand::Light, data, id_code);
         PacketAction pkt_ac = {pkt, true};
-
-#ifdef ESP32
-        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
-#else
+#ifdef ESP8266
         if (!q_push(&pkt_q, &pkt_ac))
+#else
+        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
 #endif
         {
             ESP_LOGE(TAG, "packet queue full, dropping light pkt");
@@ -2237,7 +2178,7 @@ bool set_light(bool value, bool verify)
     }
     return true;
 }
-#endif
+#endif // USE_GDOLIB
 
 void manual_recovery()
 {
