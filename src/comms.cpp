@@ -903,7 +903,7 @@ void comms_loop_sec1()
                 // best attempt to trap invalid values (due to collisions)
                 if (((value & 0xF0) != 0x00) && ((value & 0xF0) != 0x50) && ((value & 0xF0) != 0xB0))
                 {
-                    ESP_LOGI(TAG, "0x38 value upper nible not 0x0 or 0x5 or 0xB: %02X", value);
+                    ESP_LOGI(TAG, "RX DoorStatus(0x38) upper nibble not 0x0 or 0x5 or 0xB, received: %02X", value);
                     break;
                 }
                 value = (value & 0x7);
@@ -981,7 +981,7 @@ void comms_loop_sec1()
                 // upper nibble must be 5
                 if ((value & 0xF0) != 0x50)
                 {
-                    ESP_LOGI(TAG, "0x3A value upper nible not 5: %02X", value);
+                    ESP_LOGI(TAG, "RX LightLockStatus(0x3A) upper nibble not 5, received: %02X", value);
                     break;
                 }
 
@@ -1053,7 +1053,7 @@ void comms_loop_sec1()
 #endif
     {
         now = _millis();
-        /*
+        
         // if there is no wall panel, no need to check 200ms since last rx
         // (yes some duped code here, but its clearer)
         if (!wallPanelDetected)
@@ -1070,17 +1070,17 @@ void comms_loop_sec1()
             okToSend &= ((int32_t)(now - last_rx) < 200);      // before 200ms since last rx
             okToSend &= ((int32_t)(now - last_tx) > 20);       // after 20ms since last tx
             okToSend &= ((int32_t)(now - last_tx) > (int32_t)cmdDelay); // after any command delays
-
         }
-        */
-
+    
+        /*
         // Replacing above code and specifically removing test for <200ms for last rx when
         // a digital wall panel is detected. I believe this was an attempt to avoid collision
         // on the wire, but it is causing the above test to always return false?
-        okToSend = ((int32_t)(now - last_tx) > 50)                    // wait at least 20ms since last tx
-                   && ((int32_t)(now - last_rx) > 50)                 // and at least 20ms since last rx
+        okToSend = ((int32_t)(now - last_tx) > 50)                    // wait at least 50ms since last tx
+                   && ((int32_t)(now - last_rx) > 50)                 // and at least 50ms since last rx
                    && ((int32_t)(now - last_tx) > (int32_t)cmdDelay); // and any specified delay from last tx
-
+        */
+       
         // OK to send based on above rules
         if (okToSend)
         {
