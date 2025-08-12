@@ -10,6 +10,7 @@
  * Contributions acknowledged from
  * Brandon Matthews... https://github.com/thenewwazoo
  * Jonathan Stroud...  https://github.com/jgstroud
+ * Mitchell Solomon... https://github.com/mitchjs
  *
  */
 

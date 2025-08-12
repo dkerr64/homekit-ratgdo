@@ -11,6 +11,7 @@
  * Thomas Hagan...     https://github.com/tlhagan
  * Brandon Matthews... https://github.com/thenewwazoo
  * Jonathan Stroud...  https://github.com/jgstroud
+ * Mitchell Solomon... https://github.com/mitchjs
  *
  */
 
@@ -55,6 +56,7 @@ struct __attribute__((aligned(4))) PacketAction
     uint32_t delay;
 };
 
+#define COMMAND_QUEUE_SIZE 16
 #ifdef ESP32
 QueueHandle_t pkt_q;
 #else
@@ -193,6 +195,9 @@ void obstruction_timer();
 #endif // not USE_GDOLIB
 
 void manual_recovery();
+
+void light_press();
+void light_release();
 
 #ifdef USE_GDOLIB
 /****************************************************************************
@@ -354,9 +359,9 @@ void setup_comms()
     // to exceed available IRAM.  We can adjust the LOG_BUFFER_SIZE (in log.h) if we
     // need to make more space available for initialization.
 #ifdef ESP32
-    pkt_q = xQueueCreate(16, sizeof(PacketAction));
+    pkt_q = xQueueCreate(COMMAND_QUEUE_SIZE, sizeof(PacketAction));
 #else
-    q_init(&pkt_q, sizeof(PacketAction), 16, FIFO, false);
+    q_init(&pkt_q, sizeof(PacketAction), COMMAND_QUEUE_SIZE, FIFO, false);
 #endif
 
     if (doorControlType == 1)
@@ -1771,7 +1776,7 @@ void door_command(DoorAction action)
         data.value.door_action.id = 1;
 
         Packet pkt = Packet(PacketCommand::DoorAction, data, id_code);
-        PacketAction pkt_ac = {pkt, false, 250}; // 250ms delay
+        PacketAction pkt_ac = {pkt, false, 50}; // 50ms delay (for "PRESS")
 #ifdef ESP8266
         if (!q_push(&pkt_q, &pkt_ac))
 #else
@@ -1899,12 +1904,23 @@ void delayFnCall(uint32_t ms, void (*callback)())
                        {
                         if (iterations > 0)
                         {
+                            // light blinks at 1hz
+
+                            // do light press to flash
                             if (light && (iterations % 2 == 0))
-                            {
-                                // If light is on, turn it off.  If off, turn it on.
-                                if (doorControlType != 3)
+                            { 
+                                if (doorControlType == 1)
                                 {
-                                    // dry contact cannot control lights
+                                    // SEC+1.0
+                                    // every 4, is 1000ms / 1hz
+                                    if ((iterations % 4) == 0)
+                                    {
+                                        light_press();
+                                    }
+                                }
+                                else if (doorControlType == 2) 
+                                {
+                                    // SEC+2.0
                                     set_light((iterations % 4) != 0, false);
                                 }
                             }
@@ -1916,25 +1932,29 @@ void delayFnCall(uint32_t ms, void (*callback)())
                         else
                         {
                             TTCtimer.detach();
-                            // Turn light off. It will turn on as part of the door close action and then go off after a timeout
+
                             ESP_LOGI(TAG, "End of function delay timer");
                             
-                            /*
-                            if (light && (doorControlType != 3)) {
-                                // dry contact cannot control lights
-                                set_light(false);
+                            // do the release now
+                            if (light)
+                            {
+                                if (doorControlType == 1)
+                                {
+                                    light_release();
+                                }
+                                else if (doorControlType == 2) 
+                                {
+                                    // dont think we need to do anything here
+                                }
                             }
-                            */
 
                             if (callback)
                             {
-                                // delay so that set_light() can do its thing
-                                callbackDelay.once_ms(interval, [callback]()
+                                // small delay, let all the releases happen...
+                                // seems some delay needed
+                                callbackDelay.once_ms(500, [callback]()
                                 {
-                                    if (callback == door_command_close)
-                                    {
-                                        ESP_LOGI(TAG,"Calling delayed function 'door_command_close()'");
-                                    }
+                                    if (callback == door_command_close) { ESP_LOGI(TAG, "Calling delayed function: 'door_command_close()'"); }
 
                                     callback();
                                 });
@@ -2140,6 +2160,50 @@ bool set_light(bool value, bool verify)
     return true;
 }
 #else
+
+
+void light_press()
+{
+    PacketData data;
+    data.type = PacketDataType::Light;
+    data.value.light.light = LightState::On;
+    data.value.light.pressed = true;
+    Packet pkt = Packet(PacketCommand::Light, data, id_code);
+    PacketAction pkt_ac = {pkt, true, 40}; // 40ms delay
+#ifdef ESP8266
+    if (!q_push(&pkt_q, &pkt_ac))
+#else
+    if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
+#endif
+    {
+        ESP_LOGE(TAG, "packet queue full, dropping light press pkt");
+    }
+}
+
+void light_release()
+{
+    PacketData data;
+    data.type = PacketDataType::Light;
+    data.value.light.light = LightState::On;
+    data.value.light.pressed = false;
+    Packet pkt = Packet(PacketCommand::Light, data, id_code);
+    PacketAction pkt_ac = {pkt, true, 40}; // 40ms delay
+
+    // do 4 releases, not sure why 4 yet... but thats what MYQ->WALLPANEL did
+    for (int numReleases = 0; numReleases < 4; numReleases++)
+    {
+#ifdef ESP8266
+        if (!q_push(&pkt_q, &pkt_ac))
+#else
+        if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
+#endif
+        {
+            ESP_LOGE(TAG, "packet queue full, dropping light release pkt #%d", numReleases);
+        }
+    }
+}
+
+
 bool set_light(bool value, bool verify)
 {
     // return value: true = light state changed, else state unchanged
@@ -2159,7 +2223,7 @@ bool set_light(bool value, bool verify)
         // this emulates the "light" button press+release
         data.value.light.pressed = true;
         Packet pkt = Packet(PacketCommand::Light, data, id_code);
-        PacketAction pkt_ac = {pkt, true, 100}; // 100ms delay
+        PacketAction pkt_ac = {pkt, true, 50}; // 50ms delay
 #ifdef ESP8266
         if (!q_push(&pkt_q, &pkt_ac))
 #else
