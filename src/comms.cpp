@@ -12,7 +12,6 @@
  * Brandon Matthews... https://github.com/thenewwazoo
  * Jonathan Stroud...  https://github.com/jgstroud
  * Mitchell Solomon... https://github.com/mitchjs
- * Mitchell Solomon... https://github.com/mitchjs
  *
  */
 
@@ -374,13 +373,13 @@ void setup_comms()
 
     if (doorControlType == 1)
     {
-        ESP_LOGI(TAG, "=== Setting up comms for SECURITY+1.0 protocol");        
+        ESP_LOGI(TAG, "=== Setting up comms for SECURITY+1.0 protocol");
         sw_serial.begin(1200, SWSERIAL_8E1, UART_RX_PIN, UART_TX_PIN, true, 32);
         wallPanelDetected = false;
         wallplateBooting = false;
         doorState = GarageDoorCurrentState::UNKNOWN;
         lightState = 2;
-        lockState = 2;  
+        lockState = 2;
     }
     else if (doorControlType == 2)
     {
@@ -1009,9 +1008,6 @@ void comms_loop_sec1()
     static uint32_t byte_count = 0;
     static RxPacket rx_packet;
     bool gotMessage = false;
-    
-    // timestamp message
-    last_rx_msg = _millis();
 
     // CTS timer, after xxx, clear CTS
     if (clearToSend)
@@ -1030,9 +1026,7 @@ void comms_loop_sec1()
 
         clearToSend = false;
 
-        manual_recovery();
-
-        if (motionTriggers.bit.doorKey)
+        if (!reading_msg)
         {
             // valid?
             if (ser_byte >= 0x30 && ser_byte <= 0x3A)
@@ -1653,6 +1647,7 @@ void comms_loop()
 bool transmitSec1(byte toSend)
 {
     bool noSend = false;
+
     // safety
     if (sw_serial.available())
     {
@@ -1750,7 +1745,7 @@ bool process_PacketAction(PacketAction &pkt_ac)
     bool success = false;
 
     if (doorControlType == 1)
-    {       
+    {
         // check which action
         switch (pkt_ac.pkt.m_data.type)
         {
@@ -2048,11 +2043,8 @@ void delayFnCall(uint32_t ms, void (*callback)())
                        {
                         if (iterations > 0)
                         {
-                            // light blinks at 1hz
-
-                            // do light press to flash
                             if (light && (iterations % 2 == 0))
-                            { 
+                            {
                                 // If light is on, turn it off.  If off, turn it on.
                                 if (doorControlType != 3)
                                 {
@@ -2340,6 +2332,7 @@ bool set_light(bool value, bool verify)
         ESP_LOGI(TAG, "Light already %s; ignored request", (value) ? "on" : "off");
         return false;
     }
+
     ESP_LOGI(TAG, "Set Garage Door Light: %s", (value) ? "on" : "off");
 
     // SECURITY+1.0
