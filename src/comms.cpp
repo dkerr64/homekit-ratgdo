@@ -2069,22 +2069,10 @@ void delayFnCall(uint32_t ms, void (*callback)())
                             // do light press to flash
                             if (light && (iterations % 2 == 0))
                             { 
-                                if (doorControlType == 1)
+                                // If light is on, turn it off.  If off, turn it on.
+                                if (doorControlType != 3)
                                 {
-                                    // SEC+1.0
-                                    // every 4, is 1000ms / 1hz
-                                    if ((iterations % 4) == 0)
-                                    {
-                                        #ifndef USE_GDOLIB
-                                        sec1_light_press();
-                                        #else
-                                        set_light((iterations % 4) != 0, false);
-                                        #endif
-                                    }
-                                }
-                                else if (doorControlType == 2) 
-                                {
-                                    // SEC+2.0
+                                    // dry contact cannot control lights
                                     set_light((iterations % 4) != 0, false);
                                 }
                             }
@@ -2099,23 +2087,6 @@ void delayFnCall(uint32_t ms, void (*callback)())
 
                             ESP_LOGI(TAG, "End of function delay timer");
                             
-                            // do the release now
-                            if (light)
-                            {
-                                if (doorControlType == 1)
-                                {
-                                    #ifndef USE_GDOLIB
-                                    // do 4 releases, not sure why 4 yet... but thats what MYQ->WALLPANEL did
-                                    // tried 2, door close wouldnt work
-                                    sec1_light_release(4);
-                                    #endif
-                                }
-                                else if (doorControlType == 2) 
-                                {
-                                    // dont think we need to do anything here
-                                }
-                            }
-
                             if (callback)
                             {
                                 // small delay, let all the releases happen...
