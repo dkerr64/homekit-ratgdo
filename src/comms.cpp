@@ -1791,7 +1791,7 @@ bool process_PacketAction(PacketAction &pkt_ac)
         {
             if (pkt_ac.pkt.m_data.value.door_action.pressed == true)
             {
-                ESP_LOGI(TAG, "SEC1 TX sending DOOR button press");
+                //ESP_LOGI(TAG, "SEC1 TX sending DOOR button press");
                 
                 success = transmitSec1(secplus1Codes::DoorButtonPress);
                 if (success)
@@ -1805,7 +1805,7 @@ bool process_PacketAction(PacketAction &pkt_ac)
             }
             else
             {
-                ESP_LOGI(TAG, "SEC1 TX sending DOOR button release");
+                //ESP_LOGI(TAG, "SEC1 TX sending DOOR button release");
 
                 success = transmitSec1(secplus1Codes::DoorButtonRelease);
                 if (success)
@@ -1824,7 +1824,7 @@ bool process_PacketAction(PacketAction &pkt_ac)
         {
             if (pkt_ac.pkt.m_data.value.light.pressed == true)
             {
-                ESP_LOGI(TAG, "SEC1 TX sending LIGHT button press");
+                //ESP_LOGI(TAG, "SEC1 TX sending LIGHT button press");
 
                 success = transmitSec1(secplus1Codes::LightButtonPress);
                 if (success)
@@ -1838,7 +1838,7 @@ bool process_PacketAction(PacketAction &pkt_ac)
             }
             else
             {
-                ESP_LOGI(TAG, "SEC1 TX sending LIGHT button release");
+                //ESP_LOGI(TAG, "SEC1 TX sending LIGHT button release");
 
                 success = transmitSec1(secplus1Codes::LightButtonRelease);
                 if (success)
@@ -1857,7 +1857,7 @@ bool process_PacketAction(PacketAction &pkt_ac)
         {
             if (pkt_ac.pkt.m_data.value.lock.pressed == true)
             {
-                ESP_LOGI(TAG, "SEC1 TX sending LOCK button press");
+                //ESP_LOGI(TAG, "SEC1 TX sending LOCK button press");
 
                 success = transmitSec1(secplus1Codes::LockButtonPress);
                 if (success)
@@ -1871,7 +1871,7 @@ bool process_PacketAction(PacketAction &pkt_ac)
             }
             else
             {
-                ESP_LOGI(TAG, "SEC1 TX sending LOCK button release");
+                //ESP_LOGI(TAG, "SEC1 TX sending LOCK button release");
 
                 success = transmitSec1(secplus1Codes::LockButtonRelease);
                 if (success)
