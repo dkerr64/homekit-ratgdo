@@ -1012,8 +1012,9 @@ void comms_loop_sec1()
         }
     }
 
-    // get all the rxed bytes processed now
-    while (sw_serial.available())
+    // do not change to a while, can get into a loop that never breaks out
+    // to allow other stuff to process.
+    if (sw_serial.available())
     {
         uint8_t ser_byte = sw_serial.read();
 
@@ -1075,7 +1076,7 @@ void comms_loop_sec1()
             cts_signal = _millis();
             clearToSend = true;
         }
-    } // while
+    }
 
     // timout check was incorrectly inside of the sw_serial.available() if above
     // incomplete message timeout?
