@@ -1198,7 +1198,7 @@ void comms_loop_sec1()
         if (last_tx)
             okToSend = ((int32_t)(now - last_tx) > SECPLUS1_TX_MINIMUM_DELAY); // after TX minmum delay between messages
         if (!okToSend)
-            ESP_LOGD(TAG, "waiting fro last_tx > 30ms");
+            ESP_LOGD(TAG, "waiting for last_tx > 30ms");
         // not using any cmd delays anymore
         // okToSend &= ((int32_t)(now - last_tx) > (int32_t)cmdDelay);        // after any extended command delays ( > MINIMUM )
 
