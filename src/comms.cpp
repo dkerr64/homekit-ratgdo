@@ -971,11 +971,6 @@ void sec1_process_message(uint8_t key, uint8_t value)
     {
         // only use for real sec1 commm debugging, its just too chatty
         // ESP_LOGI(TAG, "SEC1 RX 0x3A value: 0x%02X", value);
-    // light & lock
-    case secplus1Codes::LightLockStatus:
-    {
-        // only use for real sec1 commm debugging, its just too chatty
-        // ESP_LOGI(TAG, "SEC1 RX 0x3A value: 0x%02X", value);
 
         // upper nibble must be 0x5 or 0x1
         if (((value & 0xF0) != 0x50) && ((value & 0xF0) != 0x10))
