@@ -123,7 +123,8 @@ std::map<gdo_lock_state_t, LockTargetState> gdo_to_homekit_lock_target_state = {
 /******************************* OBSTRUCTION SENSOR *********************************/
 
 // Track if we've detected a working obstruction sensor
-bool obstruction_sensor_detected = false;
+static bool obstruction_sensor_detected = false;
+static bool get_obstruction_from_status = false;
 
 struct obstruction_sensor_t
 {
@@ -551,13 +552,19 @@ void setup_comms()
 #endif
 
 #ifndef USE_GDOLIB
-    /* pin-based obstruction detection
-    // FALLING from https://github.com/ratgdo/esphome-ratgdo/blob/e248c705c5342e99201de272cb3e6dc0607a0f84/components/ratgdo/ratgdo.cpp#L54C14-L54C14
-     */
-    ESP_LOGI(TAG, "Initialize for obstruction detection");
-    pinMode(INPUT_OBST_PIN, INPUT);
-    pinMode(STATUS_OBST_PIN, OUTPUT);
-    attachInterrupt(INPUT_OBST_PIN, isr_obstruction, FALLING);
+    if (!(get_obstruction_from_status = userConfig->getObstFromStatus()))
+    {
+        // pin-based obstruction detection attempted only if user not requested to get from status
+        ESP_LOGI(TAG, "Initialize for pin-based obstruction detection");
+        pinMode(INPUT_OBST_PIN, INPUT);
+        pinMode(STATUS_OBST_PIN, OUTPUT);
+        // FALLING from https://github.com/ratgdo/esphome-ratgdo/blob/e248c705c5342e99201de272cb3e6dc0607a0f84/components/ratgdo/ratgdo.cpp#L54C14-L54C14
+        attachInterrupt(INPUT_OBST_PIN, isr_obstruction, FALLING);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "Use status messages for obstruction detection");
+    }
 #endif
     comms_setup_done = true;
     comms_status_start = _millis();
@@ -944,12 +951,26 @@ void sec1_process_message(uint8_t key, uint8_t value)
     // obstruction states (not confirmed)
     case secplus1Codes::ObstructionStatus:
     {
-        // currently not using
         // BIT0
         // BIT3 set is obstructed
-
         if (value > 0)
             ESP_LOGD(TAG, "SEC1 TX MSG 0x39: value: 0x%02X", value);
+
+        // Handle obstruction from status packet if pin-based detection not available
+        if (!obstruction_sensor_detected)
+        {
+            bool status_obstructed = bitRead(value, 3);
+            if (garage_door.obstructed != status_obstructed)
+            {
+                ESP_LOGI(TAG, "Obstruction %s (Status packet)", status_obstructed ? "Detected" : "Clear");
+                notify_homekit_obstruction(status_obstructed);
+                digitalWrite(STATUS_OBST_PIN, !status_obstructed);
+                if (motionTriggers.bit.obstruction)
+                {
+                    notify_homekit_motion(status_obstructed);
+                }
+            }
+        }
 
         break;
     }
@@ -1402,15 +1423,12 @@ void comms_loop_sec2()
                     bool status_obstructed = !pkt.m_data.value.status.obstruction;
                     if (garage_door.obstructed != status_obstructed)
                     {
-                        garage_door.obstructed = status_obstructed;
                         ESP_LOGI(TAG, "Obstruction %s (Status packet)", status_obstructed ? "Detected" : "Clear");
-                        notify_homekit_obstruction(true);
-                        digitalWrite(STATUS_OBST_PIN, garage_door.obstructed);
-
+                        notify_homekit_obstruction(status_obstructed);
+                        digitalWrite(STATUS_OBST_PIN, !status_obstructed);
                         if (motionTriggers.bit.obstruction)
                         {
-                            garage_door.motion = garage_door.obstructed;
-                            notify_homekit_motion(true);
+                            notify_homekit_motion(status_obstructed);
                         }
                     }
                 }
@@ -1570,19 +1588,14 @@ void comms_loop_sec2()
                     // Only update if obstruction state has changed
                     if (garage_door.obstructed != currently_obstructed)
                     {
-                        garage_door.obstructed = currently_obstructed;
-                        ESP_LOGI(TAG, "Obstruction %s (Pair3Resp parity %d)",
-                                 currently_obstructed ? "Detected" : "Clear", parity);
-
+                        ESP_LOGI(TAG, "Obstruction %s (Pair3Resp parity %d)", currently_obstructed ? "Detected" : "Clear", parity);
                         // Notify HomeKit of the state change
-                        notify_homekit_obstruction(true);
-                        digitalWrite(STATUS_OBST_PIN, garage_door.obstructed);
-
+                        notify_homekit_obstruction(currently_obstructed);
+                        digitalWrite(STATUS_OBST_PIN, !currently_obstructed);
                         // Trigger motion detection if enabled
                         if (motionTriggers.bit.obstruction)
                         {
-                            garage_door.motion = garage_door.obstructed;
-                            notify_homekit_motion(true);
+                            notify_homekit_motion(currently_obstructed);
                         }
                     }
                 }
@@ -2476,6 +2489,9 @@ void manual_recovery()
  */
 void obstruction_timer()
 {
+    if (get_obstruction_from_status)
+        return;
+
     _millis_t current_millis = _millis();
     static _millis_t last_millis = 0;
 
@@ -2511,7 +2527,7 @@ void obstruction_timer()
             {
                 ESP_LOGI(TAG, "Obstruction Clear");
                 notify_homekit_obstruction(false);
-                digitalWrite(STATUS_OBST_PIN, garage_door.obstructed);
+                digitalWrite(STATUS_OBST_PIN, HIGH);
                 if (motionTriggers.bit.obstruction)
                 {
                     notify_homekit_motion(false);
@@ -2544,7 +2560,7 @@ void obstruction_timer()
                     {
                         ESP_LOGI(TAG, "Obstruction Detected");
                         notify_homekit_obstruction(true);
-                        digitalWrite(STATUS_OBST_PIN, garage_door.obstructed);
+                        digitalWrite(STATUS_OBST_PIN, LOW);
                         if (motionTriggers.bit.obstruction)
                         {
                             notify_homekit_motion(true);
