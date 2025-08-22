@@ -1096,9 +1096,11 @@ void SSEheartbeat(SSESubscription *s)
             ESP_LOGW(TAG, "WARNING heartbeat JSON length: %d is over 80%% of available buffer", strlen(json));
         }
         JSON_REMOVE_NL(json);
-        YIELD(); 
+        YIELD();
         // retry needed to before event:
+#ifdef ESP8266
         s->client.flush(); // make sure previous data all sent.
+#endif
         s->client.printf("retry: 15000\nevent: message\ndata: %s\n\n", json);
         GIVE_MUTEX();
     }
@@ -1291,7 +1293,9 @@ void handle_crashlog()
 {
     ESP_LOGI(TAG, "Request to display crash log...");
     WiFiClient client = server.client();
+#ifdef ESP8266
     client.flush(); // make sure previous data all sent.
+#endif
     client.print(response200);
 #ifdef ESP8266
     saveCrash.print(client);
@@ -1306,7 +1310,9 @@ void handle_crashlog()
 void handle_showlog()
 {
     WiFiClient client = server.client();
+#ifdef ESP8266
     client.flush(); // make sure previous data all sent.
+#endif
     client.print(response200);
     ratgdoLogger->printMessageLog(client);
     client.stop();
@@ -1315,7 +1321,9 @@ void handle_showlog()
 void handle_showrebootlog()
 {
     WiFiClient client = server.client();
+#ifdef ESP8266
     client.flush(); // make sure previous data all sent.
+#endif
     client.print(response200);
 #ifdef ESP8266
     File file = LittleFS.open(REBOOT_LOG_MSG_FILE, "r");
@@ -1382,7 +1390,9 @@ void SSEBroadcastState(const char *data, BroadcastType type)
             {
                 if (subscription[i].logViewer)
                 {
+#ifdef ESP8266
                     subscription[i].client.flush(); // make sure previous data all sent.
+#endif
                     subscription[i].client.printf_P(PSTR("event: logger\ndata: %s\n\n"), data);
                 }
             }
@@ -1390,7 +1400,9 @@ void SSEBroadcastState(const char *data, BroadcastType type)
             {
                 String IPaddrstr = IPAddress(subscription[i].clientIP).toString();
                 ESP_LOGV(TAG, "SSE send to client %s on channel %d, data: %s", IPaddrstr.c_str(), i, data);
+#ifdef ESP8266
                 subscription[i].client.flush(); // make sure previous data all sent.
+#endif
                 subscription[i].client.printf_P(PSTR("event: message\ndata: %s\n\n"), data);
             }
         }
@@ -1546,7 +1558,9 @@ void handle_firmware_upload()
                         ESP_LOGW(TAG, "WARNING firmware upload JSON length: %d is over 80%% of available buffer", strlen(json));
                     }
                     JSON_REMOVE_NL(json);
+#ifdef ESP8266
                     firmwareUpdateSub->client.flush(); // make sure previous data all sent.
+#endif
                     firmwareUpdateSub->client.printf_P(PSTR("event: uploadStatus\ndata: %s\n\n"), json);
                     GIVE_MUTEX();
                 }

@@ -123,7 +123,8 @@ std::map<gdo_lock_state_t, LockTargetState> gdo_to_homekit_lock_target_state = {
 /******************************* OBSTRUCTION SENSOR *********************************/
 
 // Track if we've detected a working obstruction sensor
-bool obstruction_sensor_detected = false;
+static bool obstruction_sensor_detected = false;
+static bool get_obstruction_from_status = false;
 
 struct obstruction_sensor_t
 {
@@ -551,13 +552,19 @@ void setup_comms()
 #endif
 
 #ifndef USE_GDOLIB
-    /* pin-based obstruction detection
-    // FALLING from https://github.com/ratgdo/esphome-ratgdo/blob/e248c705c5342e99201de272cb3e6dc0607a0f84/components/ratgdo/ratgdo.cpp#L54C14-L54C14
-     */
-    ESP_LOGI(TAG, "Initialize for obstruction detection");
-    pinMode(INPUT_OBST_PIN, INPUT);
-    pinMode(STATUS_OBST_PIN, OUTPUT);
-    attachInterrupt(INPUT_OBST_PIN, isr_obstruction, FALLING);
+    if (!(get_obstruction_from_status = userConfig->getObstFromStatus()))
+    {
+        // pin-based obstruction detection attempted only if user not requested to get from status
+        ESP_LOGI(TAG, "Initialize for pin-based obstruction detection");
+        pinMode(INPUT_OBST_PIN, INPUT);
+        pinMode(STATUS_OBST_PIN, OUTPUT);
+        // FALLING from https://github.com/ratgdo/esphome-ratgdo/blob/e248c705c5342e99201de272cb3e6dc0607a0f84/components/ratgdo/ratgdo.cpp#L54C14-L54C14
+        attachInterrupt(INPUT_OBST_PIN, isr_obstruction, FALLING);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "Use status messages for obstruction detection");
+    }
 #endif
     comms_setup_done = true;
     comms_status_start = _millis();
@@ -944,12 +951,26 @@ void sec1_process_message(uint8_t key, uint8_t value)
     // obstruction states (not confirmed)
     case secplus1Codes::ObstructionStatus:
     {
-        // currently not using
         // BIT0
         // BIT3 set is obstructed
-
         if (value > 0)
             ESP_LOGD(TAG, "SEC1 TX MSG 0x39: value: 0x%02X", value);
+
+        // Handle obstruction from status packet if pin-based detection not available
+        if (!obstruction_sensor_detected)
+        {
+            bool status_obstructed = bitRead(value, 3);
+            if (garage_door.obstructed != status_obstructed)
+            {
+                ESP_LOGI(TAG, "Obstruction %s (Status packet)", status_obstructed ? "Detected" : "Clear");
+                notify_homekit_obstruction(status_obstructed);
+                digitalWrite(STATUS_OBST_PIN, !status_obstructed);
+                if (motionTriggers.bit.obstruction)
+                {
+                    notify_homekit_motion(status_obstructed);
+                }
+            }
+        }
 
         break;
     }
@@ -1031,7 +1052,7 @@ void comms_loop_sec1()
     static RxPacket rx_packet;
     bool gotMessage = false;
 
-    // CTS timer
+    // CTS timer, after xxx, clear CTS
     // more than 20ms elasped after a complete message arrives
     // if one arrives before that (ie multiple in rx buffers, the cts_signal is reset)
     if (!clearToSend)
@@ -1045,84 +1066,96 @@ void comms_loop_sec1()
     }
 
     // get all the rxed bytes processed now
-    while (sw_serial.available())
+    if (int available = sw_serial.available())
     {
-        uint8_t ser_byte = sw_serial.read();
+        if (available > 1)
+            ESP_LOGD(TAG, "sw_serial.available() = %d", available);
 
-        if (clearToSend)
+        do
         {
-            clearToSend = false;
+            uint8_t ser_byte = sw_serial.read();
 
-            // ESP_LOGD(TAG, "SEC1 TX not CLEAR TO SEND");
-        }
-
-        if (reading_msg == false)
-        {
-            if (ser_byte == 0xFF)
+            if (clearToSend)
             {
-                ESP_LOGD(TAG, "SEC1 RX HELLO FROM GDO 0x%02X", ser_byte);
+                clearToSend = false;
 
-                // count them, if say 5, start emulator?
-                byte_count++;
-                if (byte_count > 4)
-                {
-                    byte_count = 0;
-
-                    ESP_LOGD(TAG, "SEC1 RX got 5 of 0xFFs");
-                }
+                // ESP_LOGD(TAG, "SEC1 TX not CLEAR TO SEND");
             }
-            // valid?
-            else if (ser_byte >= 0x30 && ser_byte <= 0x3A)
+
+            if (reading_msg == false)
             {
-                byte_count = 1;
-                rx_packet[0] = ser_byte;
-
-                reading_msg = true;
-
-                // timestamp beinging of message
-                msg_start = _millis();
-
-                // is it single byte command? (PRESS/RELEASE FROM WALL PLATE)
-                if (ser_byte >= 0x30 && ser_byte <= 0x37)
+                if (ser_byte == 0xFF)
                 {
-                    reading_msg = false;
-                    gotMessage = true;
-                    sec1_process_message(rx_packet[0], rx_packet[1]);
+                    ESP_LOGD(TAG, "SEC1 RX HELLO FROM GDO 0x%02X", ser_byte);
+
+                    // count them, if say 5, start emulator?
+                    byte_count++;
+                    if (byte_count > 4)
+                    {
+                        byte_count = 0;
+
+                        ESP_LOGD(TAG, "SEC1 RX got 5 of 0xFFs");
+                    }
+                }
+                // valid?
+                else if (ser_byte >= 0x30 && ser_byte <= 0x3A)
+                {
+                    byte_count = 1;
+                    rx_packet[0] = ser_byte;
+
+                    reading_msg = true;
+
+                    // timestamp beinging of message
+                    msg_start = _millis();
+
+                    // is it single byte command? (PRESS/RELEASE FROM WALL PLATE)
+                    if (ser_byte >= 0x30 && ser_byte <= 0x37)
+                    {
+                        reading_msg = false;
+                        gotMessage = true;
+                        sec1_process_message(rx_packet[0], rx_packet[1]);
+                    }
+                }
+                else
+                {
+                    ESP_LOGD(TAG, "SEC1 RX invalid cmd byte 0x%02X", ser_byte);
                 }
             }
             else
             {
-                ESP_LOGD(TAG, "SEC1 RX invalid cmd byte 0x%02X", ser_byte);
+                // we only allow 2 bytes max, and the reading_msg controls that
+
+                // this is the value to response of the GDO query
+                byte_count = 2;
+                rx_packet[1] = ser_byte;
+
+                gotMessage = true;
+                sec1_process_message(rx_packet[0], rx_packet[1]);
+
+                // reset cts signal, after 10ms ok to send
+                cts_signal = _millis();
             }
-        }
-        else
-        {
-            // we only allow 2 bytes max, and the reading_msg controls that
 
-            // this is the value to response of the GDO query
-            byte_count = 2;
-            rx_packet[1] = ser_byte;
+            if (gotMessage == true)
+            {
+                gotMessage = false;
 
-            gotMessage = true;
-            sec1_process_message(rx_packet[0], rx_packet[1]);
+                // reset start of message
+                reading_msg = false;
+                byte_count = 0;
 
-            // reset cts signal, after 10ms ok to send
-            cts_signal = _millis();
-        }
+                // temp code, preload to aid detect bad rx (good news i havent seen any bads)
+                rx_packet[0] = 0xBB;
+                rx_packet[1] = 0xAA;
+            }
+        } while ((available = sw_serial.available())); // double brackets to avoid [-Wparentheses] compiler warning
+    }
+    if (sw_serial.available())
+    {
+        ESP_LOGD(TAG, "SEC1 RX, after while loop, sw_serial.available()=0x%02X!!! exiting comm_loop", sw_serial.peek());
 
-        if (gotMessage == true)
-        {
-            gotMessage = false;
-
-            // reset start of message
-            reading_msg = false;
-            byte_count = 0;
-
-            // temp code, preload to aid detect bad rx (good news i havent seen any bads)
-            rx_packet[0] = 0xBB;
-            rx_packet[1] = 0xAA;
-        }
-    } 
+        return;
+    }
 
     // incomplete message timeout?
     if (reading_msg == true && gotMessage == false && ((_millis() - msg_start) > SECPLUS1_RX_MESSAGE_TIMEOUT))
@@ -1142,12 +1175,6 @@ void comms_loop_sec1()
     // if still reading the message in, no need to process further
     // as its not really good time to TX, and next byte is expected within 10ms
     if (reading_msg == true)
-    {
-        return;
-    }
-    
-    // check if a byte became available
-    if (sw_serial.available())
     {
         return;
     }
@@ -1396,15 +1423,12 @@ void comms_loop_sec2()
                     bool status_obstructed = !pkt.m_data.value.status.obstruction;
                     if (garage_door.obstructed != status_obstructed)
                     {
-                        garage_door.obstructed = status_obstructed;
                         ESP_LOGI(TAG, "Obstruction %s (Status packet)", status_obstructed ? "Detected" : "Clear");
-                        notify_homekit_obstruction(true);
-                        digitalWrite(STATUS_OBST_PIN, garage_door.obstructed);
-
+                        notify_homekit_obstruction(status_obstructed);
+                        digitalWrite(STATUS_OBST_PIN, !status_obstructed);
                         if (motionTriggers.bit.obstruction)
                         {
-                            garage_door.motion = garage_door.obstructed;
-                            notify_homekit_motion(true);
+                            notify_homekit_motion(status_obstructed);
                         }
                     }
                 }
@@ -1564,19 +1588,14 @@ void comms_loop_sec2()
                     // Only update if obstruction state has changed
                     if (garage_door.obstructed != currently_obstructed)
                     {
-                        garage_door.obstructed = currently_obstructed;
-                        ESP_LOGI(TAG, "Obstruction %s (Pair3Resp parity %d)",
-                                 currently_obstructed ? "Detected" : "Clear", parity);
-
+                        ESP_LOGI(TAG, "Obstruction %s (Pair3Resp parity %d)", currently_obstructed ? "Detected" : "Clear", parity);
                         // Notify HomeKit of the state change
-                        notify_homekit_obstruction(true);
-                        digitalWrite(STATUS_OBST_PIN, garage_door.obstructed);
-
+                        notify_homekit_obstruction(currently_obstructed);
+                        digitalWrite(STATUS_OBST_PIN, !currently_obstructed);
                         // Trigger motion detection if enabled
                         if (motionTriggers.bit.obstruction)
                         {
-                            garage_door.motion = garage_door.obstructed;
-                            notify_homekit_motion(true);
+                            notify_homekit_motion(currently_obstructed);
                         }
                     }
                 }
@@ -1716,14 +1735,14 @@ bool transmitSec1(byte toSend)
         return false;
     }
 
-    /*
     if (wallPanelDetected)
     {
         ESP_LOGD(TAG, "SEC1 TX DISCONNECT WP");
+
         // disconnect wall panel
         digitalWrite(STATUS_DOOR_PIN, 0);
+        delay(1);
     }
-    */
 
     // sending a poll?
     bool poll_cmd = (toSend == 0x38) || (toSend == 0x39) || (toSend == 0x3A);
@@ -1750,14 +1769,16 @@ bool transmitSec1(byte toSend)
         sw_serial.enableRx(true);
     }
 
-    /*
     if (wallPanelDetected)
     {
         ESP_LOGD(TAG, "SEC1 TX CONNECT WP");
+
         // connect wall panel
         digitalWrite(STATUS_DOOR_PIN, 1);
+        delay(1);
+
+        sw_serial.flush();
     }
-    */
 
     return true;
 }
@@ -2468,6 +2489,9 @@ void manual_recovery()
  */
 void obstruction_timer()
 {
+    if (get_obstruction_from_status)
+        return;
+
     _millis_t current_millis = _millis();
     static _millis_t last_millis = 0;
 
@@ -2503,7 +2527,7 @@ void obstruction_timer()
             {
                 ESP_LOGI(TAG, "Obstruction Clear");
                 notify_homekit_obstruction(false);
-                digitalWrite(STATUS_OBST_PIN, garage_door.obstructed);
+                digitalWrite(STATUS_OBST_PIN, HIGH);
                 if (motionTriggers.bit.obstruction)
                 {
                     notify_homekit_motion(false);
@@ -2536,7 +2560,7 @@ void obstruction_timer()
                     {
                         ESP_LOGI(TAG, "Obstruction Detected");
                         notify_homekit_obstruction(true);
-                        digitalWrite(STATUS_OBST_PIN, garage_door.obstructed);
+                        digitalWrite(STATUS_OBST_PIN, LOW);
                         if (motionTriggers.bit.obstruction)
                         {
                             notify_homekit_motion(true);
