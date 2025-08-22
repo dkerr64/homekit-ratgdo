@@ -2,6 +2,23 @@
 
 All notable changes to `homekit-ratgdo` will be documented in this file. This project tries to adhere to [Semantic Versioning](http://semver.org/).
 
+## v2.0.0 (2025-09-??)
+
+Version 2.0.0 is a major upgrade for ESP8266-based ratgdo boards.  Almost all source files for the ESP8266 and ESP32 versions of ratgdo have been merged which results in significant changes to the underlying code base for ESP8266 versions which delivers new features.
+
+While source files have been merged there remain signiciant differences between the two board types, most notably in the library used to communicate with HomeKit which are completely different.
+
+### What's Changed
+
+* New feature... Door open & close duration reported on ratgdo web page
+* New feature... Door cycle count reported on ratgdo web page (Sec+2.0 doors only)
+* Bugfix... Expected impovement in overall stability and reliability
+* Other... Significant source code changes to support move towards single code base for ESP8266 and ESP32
+
+### Known Issues
+
+* Not all features from ESP32-based boards have been enabled yet.
+
 ## v1.9.1 (2025-08-21)
 
 ### What's Changed
