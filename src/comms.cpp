@@ -1031,7 +1031,7 @@ void comms_loop_sec1()
     static RxPacket rx_packet;
     bool gotMessage = false;
 
-    // CTS timer, after xxx, clear CTS
+    // CTS timer
     // more than 20ms elasped after a complete message arrives
     // if one arrives before that (ie multiple in rx buffers, the cts_signal is reset)
     if (!clearToSend)
@@ -1045,96 +1045,84 @@ void comms_loop_sec1()
     }
 
     // get all the rxed bytes processed now
-    if (int available = sw_serial.available())
+    while (sw_serial.available())
     {
-        if (available > 1)
-            ESP_LOGD(TAG, "sw_serial.available() = %d", available);
+        uint8_t ser_byte = sw_serial.read();
 
-        do
+        if (clearToSend)
         {
-            uint8_t ser_byte = sw_serial.read();
+            clearToSend = false;
 
-            if (clearToSend)
+            // ESP_LOGD(TAG, "SEC1 TX not CLEAR TO SEND");
+        }
+
+        if (reading_msg == false)
+        {
+            if (ser_byte == 0xFF)
             {
-                clearToSend = false;
+                ESP_LOGD(TAG, "SEC1 RX HELLO FROM GDO 0x%02X", ser_byte);
 
-                // ESP_LOGD(TAG, "SEC1 TX not CLEAR TO SEND");
+                // count them, if say 5, start emulator?
+                byte_count++;
+                if (byte_count > 4)
+                {
+                    byte_count = 0;
+
+                    ESP_LOGD(TAG, "SEC1 RX got 5 of 0xFFs");
+                }
             }
-
-            if (reading_msg == false)
+            // valid?
+            else if (ser_byte >= 0x30 && ser_byte <= 0x3A)
             {
-                if (ser_byte == 0xFF)
+                byte_count = 1;
+                rx_packet[0] = ser_byte;
+
+                reading_msg = true;
+
+                // timestamp beinging of message
+                msg_start = _millis();
+
+                // is it single byte command? (PRESS/RELEASE FROM WALL PLATE)
+                if (ser_byte >= 0x30 && ser_byte <= 0x37)
                 {
-                    ESP_LOGD(TAG, "SEC1 RX HELLO FROM GDO 0x%02X", ser_byte);
-
-                    // count them, if say 5, start emulator?
-                    byte_count++;
-                    if (byte_count > 4)
-                    {
-                        byte_count = 0;
-
-                        ESP_LOGD(TAG, "SEC1 RX got 5 of 0xFFs");
-                    }
-                }
-                // valid?
-                else if (ser_byte >= 0x30 && ser_byte <= 0x3A)
-                {
-                    byte_count = 1;
-                    rx_packet[0] = ser_byte;
-
-                    reading_msg = true;
-
-                    // timestamp beinging of message
-                    msg_start = _millis();
-
-                    // is it single byte command? (PRESS/RELEASE FROM WALL PLATE)
-                    if (ser_byte >= 0x30 && ser_byte <= 0x37)
-                    {
-                        reading_msg = false;
-                        gotMessage = true;
-                        sec1_process_message(rx_packet[0], rx_packet[1]);
-                    }
-                }
-                else
-                {
-                    ESP_LOGD(TAG, "SEC1 RX invalid cmd byte 0x%02X", ser_byte);
+                    reading_msg = false;
+                    gotMessage = true;
+                    sec1_process_message(rx_packet[0], rx_packet[1]);
                 }
             }
             else
             {
-                // we only allow 2 bytes max, and the reading_msg controls that
-
-                // this is the value to response of the GDO query
-                byte_count = 2;
-                rx_packet[1] = ser_byte;
-
-                gotMessage = true;
-                sec1_process_message(rx_packet[0], rx_packet[1]);
-
-                // reset cts signal, after 10ms ok to send
-                cts_signal = _millis();
+                ESP_LOGD(TAG, "SEC1 RX invalid cmd byte 0x%02X", ser_byte);
             }
+        }
+        else
+        {
+            // we only allow 2 bytes max, and the reading_msg controls that
 
-            if (gotMessage == true)
-            {
-                gotMessage = false;
+            // this is the value to response of the GDO query
+            byte_count = 2;
+            rx_packet[1] = ser_byte;
 
-                // reset start of message
-                reading_msg = false;
-                byte_count = 0;
+            gotMessage = true;
+            sec1_process_message(rx_packet[0], rx_packet[1]);
 
-                // temp code, preload to aid detect bad rx (good news i havent seen any bads)
-                rx_packet[0] = 0xBB;
-                rx_packet[1] = 0xAA;
-            }
-        } while ((available = sw_serial.available())); // double brackets to avoid [-Wparentheses] compiler warning
-    }
-    if (sw_serial.available())
-    {
-        ESP_LOGD(TAG, "SEC1 RX, after while loop, sw_serial.available()=0x%02X!!! exiting comm_loop", sw_serial.peek());
+            // reset cts signal, after 10ms ok to send
+            cts_signal = _millis();
+        }
 
-        return;
-    }
+        if (gotMessage == true)
+        {
+            gotMessage = false;
+
+            // reset start of message
+            reading_msg = false;
+            byte_count = 0;
+
+            // temp code, preload to aid detect bad rx (good news i havent seen any bads)
+            rx_packet[0] = 0xBB;
+            rx_packet[1] = 0xAA;
+        }
+    } 
 
     // incomplete message timeout?
     if (reading_msg == true && gotMessage == false && ((_millis() - msg_start) > SECPLUS1_RX_MESSAGE_TIMEOUT))
@@ -1154,6 +1142,12 @@ void comms_loop_sec1()
     // if still reading the message in, no need to process further
     // as its not really good time to TX, and next byte is expected within 10ms
     if (reading_msg == true)
+    {
+        return;
+    }
+    
+    // check if a byte became available
+    if (sw_serial.available())
     {
         return;
     }
@@ -1722,14 +1716,14 @@ bool transmitSec1(byte toSend)
         return false;
     }
 
+    /*
     if (wallPanelDetected)
     {
         ESP_LOGD(TAG, "SEC1 TX DISCONNECT WP");
-
         // disconnect wall panel
         digitalWrite(STATUS_DOOR_PIN, 0);
-        delay(1);
     }
+    */
 
     // sending a poll?
     bool poll_cmd = (toSend == 0x38) || (toSend == 0x39) || (toSend == 0x3A);
@@ -1756,16 +1750,14 @@ bool transmitSec1(byte toSend)
         sw_serial.enableRx(true);
     }
 
+    /*
     if (wallPanelDetected)
     {
         ESP_LOGD(TAG, "SEC1 TX CONNECT WP");
-
         // connect wall panel
         digitalWrite(STATUS_DOOR_PIN, 1);
-        delay(1);
-
-        sw_serial.flush();
     }
+    */
 
     return true;
 }
