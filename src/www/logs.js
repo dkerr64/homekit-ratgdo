@@ -61,7 +61,7 @@ function openTab(evt, tabName) {
         tabcontent[i].style.display = "none";
     }
     document.getElementById("clearLogBtn").style.display = "none";
-    document.getElementById("clearLogReloadBtn").style.display = "none";
+    document.getElementById("reloadLogButton").style.display = "none";
     document.getElementById("clearBtn").style.display = "none";
     // Get all elements with class="tablinks" and remove the class "active"
     tablinks = document.getElementsByClassName("tablinks");
@@ -73,7 +73,7 @@ function openTab(evt, tabName) {
     evt.currentTarget.className += " active";
     if (tabName === "logTab") {
         document.getElementById("clearLogBtn").style.display = "inline-block";
-        document.getElementById("clearLogReloadBtn").style.display = "inline-block";
+        document.getElementById("reloadLogButton").style.display = "inline-block";
     } else if (tabName === "crashTab") {
         if (msgJson?.crashCount != 0) {
             document.getElementById("clearBtn").style.display = "inline-block";

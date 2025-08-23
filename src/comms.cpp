@@ -806,7 +806,7 @@ void sec1_process_message(uint8_t key, uint8_t value)
     if (key == 0xBB)
         ESP_LOGD(TAG, "SEC1 RX IDLE:%lums - MSG: 0x%02X:0x%02X !!! INVALID KEY BYTE !!!", since, key, value);
     else
-        ESP_LOGD(TAG, "SEC1 RX IDLE:%lums - MSG: 0x%02X:0x%02X", since, key, value);
+        ESP_LOGV(TAG, "SEC1 RX IDLE:%lums - MSG: 0x%02X:0x%02X", since, key, value);
 
     lastTime = now;
 
@@ -946,27 +946,36 @@ void sec1_process_message(uint8_t key, uint8_t value)
     // obstruction states (not confirmed)
     case secplus1Codes::ObstructionStatus:
     {
-        // BIT0
-        // BIT3 set is obstructed
+        // 0x00         No obstruction
+        // 0x00 -> 0x04 Obstruction beam broken, implies motion
+        // 0x04 -> 0x01 Stable obstruction
+        // 0x01 -> 0x04 Obstruction removed, implies motion
+        // 0x04 -> 0x00 No obstruction
+
         if (value > 0)
             ESP_LOGD(TAG, "SEC1 TX MSG 0x39: value: 0x%02X", value);
 
-        // Handle obstruction from status packet if pin-based detection not available
-        if (!obstruction_sensor_detected)
+        // Handle obstruction from status packet if pin-based detection not used
+        static uint8_t prevObstruction = 0xFF; // Initialize to invalid value
+        if (!obstruction_sensor_detected && value != prevObstruction)
         {
-            bool status_obstructed = bitRead(value, 3);
+            // Reported value has changed
+            bool status_obstructed = bitRead(value, 0);
+            bool status_motion = bitRead(value, 2);
             if (garage_door.obstructed != status_obstructed)
             {
+                // Obstruction state changed
                 ESP_LOGI(TAG, "Obstruction %s (Status packet)", status_obstructed ? "Detected" : "Clear");
                 notify_homekit_obstruction(status_obstructed);
                 digitalWrite(STATUS_OBST_PIN, !status_obstructed);
-                if (motionTriggers.bit.obstruction)
-                {
-                    notify_homekit_motion(status_obstructed);
-                }
             }
+            if (motionTriggers.bit.obstruction && status_motion)
+            {
+                // User want to trigger motion sensor based on obstruction beam
+                notify_homekit_motion(true);
+            }
+            prevObstruction = value;
         }
-
         break;
     }
 
@@ -1128,7 +1137,7 @@ void comms_loop_sec1()
             reading_msg = false;
             byte_count = 0;
         }
-    } 
+    }
 
     // incomplete message timeout?
     if (reading_msg == true && gotMessage == false && ((_millis() - msg_start) > SECPLUS1_RX_MESSAGE_TIMEOUT))
@@ -1179,7 +1188,7 @@ void comms_loop_sec1()
         {
             okToSend &= clearToSend;
         }
-            
+
         // meets our timing requirements
         if (okToSend)
         {
@@ -1191,7 +1200,7 @@ void comms_loop_sec1()
 #endif
                 if (process_PacketAction(pkt_ac))
                 {
-                     
+
                     // get next delay "between" transmits (currently not using)
                     // cmdDelay = pkt_ac.delay;
 #ifdef ESP8266
@@ -1392,11 +1401,9 @@ void comms_loop_sec2()
                 if (lock != garage_door.target_lock)
                 {
                     ESP_LOGI(TAG, "Lock Cmd %d", lock);
-                    // garage_door.target_lock = lock;
                     notify_homekit_target_lock(lock);
                     if (motionTriggers.bit.lockKey)
                     {
-                        // garage_door.motion = true;
                         notify_homekit_motion(true);
                     }
                 }
@@ -1425,7 +1432,6 @@ void comms_loop_sec2()
                 if (l != garage_door.light)
                 {
                     ESP_LOGI(TAG, "Light Cmd %s", l ? "On" : "Off");
-                    // garage_door.light = l;
                     notify_homekit_light(l);
                     if (motionTriggers.bit.lightKey)
                     {
@@ -1630,7 +1636,6 @@ void comms_loop()
     if (garage_door.motion && garage_door.motion_timer > 0 && (int32_t)(_millis() - garage_door.motion_timer) >= 0)
     {
         ESP_LOGI(TAG, "Motion Cleared");
-        // garage_door.motion = false;
         notify_homekit_motion(false);
     }
     // Service the Obstruction Timer
@@ -1681,7 +1686,7 @@ bool transmitSec1(byte toSend)
     sw_serial.write(toSend);
     sw_serial.flush(); // wait till sent
 
-    //ESP_LOGD(TAG, "SEC1 TX sent: 0x%02X", toSend);
+    // ESP_LOGD(TAG, "SEC1 TX sent: 0x%02X", toSend);
 
     // timestamp tx
     last_tx = _millis();
@@ -1777,7 +1782,7 @@ bool process_PacketAction(PacketAction &pkt_ac)
                 success = transmitSec1(secplus1Codes::DoorButtonPress);
                 if (success)
                 {
-                    //ESP_LOGI(TAG, "SEC1 TX sent DOOR button press");
+                    // ESP_LOGI(TAG, "SEC1 TX sent DOOR button press");
                 }
                 else
                 {
@@ -1791,7 +1796,7 @@ bool process_PacketAction(PacketAction &pkt_ac)
                 success = transmitSec1(secplus1Codes::DoorButtonRelease);
                 if (success)
                 {
-                    //ESP_LOGI(TAG, "SEC1 TX sent DOOR button release");
+                    // ESP_LOGI(TAG, "SEC1 TX sent DOOR button release");
                 }
                 else
                 {
@@ -1810,7 +1815,7 @@ bool process_PacketAction(PacketAction &pkt_ac)
                 success = transmitSec1(secplus1Codes::LightButtonPress);
                 if (success)
                 {
-                    //ESP_LOGI(TAG, "SEC1 TX sent LIGHT button press");
+                    // ESP_LOGI(TAG, "SEC1 TX sent LIGHT button press");
                 }
                 else
                 {
@@ -1824,7 +1829,7 @@ bool process_PacketAction(PacketAction &pkt_ac)
                 success = transmitSec1(secplus1Codes::LightButtonRelease);
                 if (success)
                 {
-                    //ESP_LOGI(TAG, "SEC1 TX sent LIGHT button release");
+                    // ESP_LOGI(TAG, "SEC1 TX sent LIGHT button release");
                 }
                 else
                 {
@@ -1843,7 +1848,7 @@ bool process_PacketAction(PacketAction &pkt_ac)
                 success = transmitSec1(secplus1Codes::LockButtonPress);
                 if (success)
                 {
-                    //ESP_LOGI(TAG, "SEC1 TX sent LOCK button press");
+                    // ESP_LOGI(TAG, "SEC1 TX sent LOCK button press");
                 }
                 else
                 {
@@ -1857,7 +1862,7 @@ bool process_PacketAction(PacketAction &pkt_ac)
                 success = transmitSec1(secplus1Codes::LockButtonRelease);
                 if (success)
                 {
-                    //ESP_LOGI(TAG, "SEC1 TX sent LOCK button release");
+                    // ESP_LOGI(TAG, "SEC1 TX sent LOCK button release");
                 }
                 else
                 {
