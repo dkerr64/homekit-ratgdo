@@ -67,7 +67,7 @@ SoftwareSerial sw_serial;
 
 #define SECPLUS1_DIGITAL_WALLPLATE_TIMEOUT 15000
 #define SECPLUS1_RX_MESSAGE_TIMEOUT 10
-#define SECPLUS1_TX_WINDOW 150
+#define SECPLUS1_TX_WINDOW 20
 #define SECPLUS1_TX_MINIMUM_DELAY 30
 
 #define COMMS_STATUS_TIMEOUT 2000
@@ -154,17 +154,15 @@ static bool rolling_code_operation_in_progress = false;
 #ifndef USE_GDOLIB
 static const uint8_t RX_LENGTH = 2;
 typedef uint8_t RxPacket[RX_LENGTH * 4];
-
-_millis_t last_rx_msg;
+// time stamping
 _millis_t last_tx;
 _millis_t msg_start;
 _millis_t cts_signal;
 bool clearToSend = false;
-bool lastClearToSend = false;
-
-bool wallPanelConnected = true;
-bool wallplateBooting = false;
+// wall panel management
+bool wallPanelBooting = false;
 bool wallPanelDetected = false;
+// states
 GarageDoorCurrentState doorState = GarageDoorCurrentState::UNKNOWN;
 uint8_t lightState;
 uint8_t lockState;
@@ -377,15 +375,15 @@ void setup_comms()
     {
         ESP_LOGI(TAG, "=== Setting up comms for SECURITY+1.0 protocol");
 
+        // MJS testing here... remove when finalized
         // GPIO16
         // enable wall panel
-        wallPanelConnected = true;
         pinMode(STATUS_DOOR_PIN, OUTPUT);
         digitalWrite(STATUS_DOOR_PIN, 1);
 
         sw_serial.begin(1200, SWSERIAL_8E1, UART_RX_PIN, UART_TX_PIN, true, 32);
         wallPanelDetected = false;
-        wallplateBooting = false;
+        wallPanelBooting = false;
         doorState = GarageDoorCurrentState::UNKNOWN;
         lightState = 2;
         lockState = 2;
@@ -632,7 +630,7 @@ void wallPlate_Emulation()
     static uint8_t stateIndex = 0;
 
     // wait up to 15 seconds to look for an existing wallplate or it could be booting, so need to wait
-    if (currentMillis - startMillis < SECPLUS1_DIGITAL_WALLPLATE_TIMEOUT || wallplateBooting == true)
+    if (currentMillis - startMillis < SECPLUS1_DIGITAL_WALLPLATE_TIMEOUT || wallPanelBooting == true)
     {
         if (currentMillis - lastRequestMillis > 1000)
         {
@@ -643,7 +641,7 @@ void wallPlate_Emulation()
         if (!wallPanelDetected && (doorState != GarageDoorCurrentState::UNKNOWN || lightState != 2))
         {
             wallPanelDetected = true;
-            wallplateBooting = false;
+            wallPanelBooting = false;
             ESP_LOGI(TAG, "DIGITAL Wall panel detected.");
             return;
         }
@@ -677,9 +675,6 @@ void wallPlate_Emulation()
             {
                 ESP_LOGE(TAG, "packet queue full, dropping panel emulation status pkt");
             }
-
-            // send direct
-            // transmitSec1(secplus1ToSend);
 
             stateIndex++;
             if (stateIndex == sizeof(secplus1States))
@@ -811,7 +806,7 @@ void sec1_process_message(uint8_t key, uint8_t value)
     if (key == 0xBB)
         ESP_LOGD(TAG, "SEC1 RX IDLE:%lums - MSG: 0x%02X:0x%02X !!! INVALID KEY BYTE !!!", since, key, value);
     else
-        ESP_LOGD(TAG, "SEC1 RX IDLE:%lums - MSG: 0x%02X:0x%02X", since, key, value);
+        ESP_LOGV(TAG, "SEC1 RX IDLE:%lums - MSG: 0x%02X:0x%02X", since, key, value);
 
     lastTime = now;
 
@@ -842,7 +837,7 @@ void sec1_process_message(uint8_t key, uint8_t value)
         // Possible power up of 889LM
         if (doorState == GarageDoorCurrentState::UNKNOWN)
         {
-            wallplateBooting = true;
+            wallPanelBooting = true;
         }
 
         break;
@@ -951,27 +946,36 @@ void sec1_process_message(uint8_t key, uint8_t value)
     // obstruction states (not confirmed)
     case secplus1Codes::ObstructionStatus:
     {
-        // BIT0
-        // BIT3 set is obstructed
+        // 0x00         No obstruction
+        // 0x00 -> 0x04 Obstruction beam broken, implies motion
+        // 0x04 -> 0x01 Stable obstruction
+        // 0x01 -> 0x04 Obstruction removed, implies motion
+        // 0x04 -> 0x00 No obstruction
+
         if (value > 0)
             ESP_LOGD(TAG, "SEC1 TX MSG 0x39: value: 0x%02X", value);
 
-        // Handle obstruction from status packet if pin-based detection not available
-        if (!obstruction_sensor_detected)
+        // Handle obstruction from status packet if pin-based detection not used
+        static uint8_t prevObstruction = 0xFF; // Initialize to invalid value
+        if (!obstruction_sensor_detected && value != prevObstruction)
         {
-            bool status_obstructed = bitRead(value, 3);
+            // Reported value has changed
+            bool status_obstructed = bitRead(value, 0);
+            bool status_motion = bitRead(value, 2);
             if (garage_door.obstructed != status_obstructed)
             {
+                // Obstruction state changed
                 ESP_LOGI(TAG, "Obstruction %s (Status packet)", status_obstructed ? "Detected" : "Clear");
                 notify_homekit_obstruction(status_obstructed);
                 digitalWrite(STATUS_OBST_PIN, !status_obstructed);
-                if (motionTriggers.bit.obstruction)
-                {
-                    notify_homekit_motion(status_obstructed);
-                }
             }
+            if (motionTriggers.bit.obstruction && status_motion)
+            {
+                // User want to trigger motion sensor based on obstruction beam
+                notify_homekit_motion(true);
+            }
+            prevObstruction = value;
         }
-
         break;
     }
 
@@ -1052,109 +1056,87 @@ void comms_loop_sec1()
     static RxPacket rx_packet;
     bool gotMessage = false;
 
-    // CTS timer, after xxx, clear CTS
-    // more than 20ms elasped after a complete message arrives
+    // CTS timer
+    // when wall panel present, need 20ms elasped after last complete message arrives.
     // if one arrives before that (ie multiple in rx buffers, the cts_signal is reset)
     if (!clearToSend)
     {
-        if ((_millis() - cts_signal) > 20)
+        if ((_millis() - cts_signal) > SECPLUS1_TX_WINDOW)
         {
             clearToSend = true;
-
-            // ESP_LOGD(TAG, "SEC1 TX CLEAR TO SEND");
         }
     }
 
     // get all the rxed bytes processed now
-    if (int available = sw_serial.available())
+    // any rx bytes will reset clearToSend
+    while (sw_serial.available())
     {
-        if (available > 1)
-            ESP_LOGD(TAG, "sw_serial.available() = %d", available);
+        uint8_t ser_byte = sw_serial.read();
 
-        do
+        clearToSend = false;
+
+        if (reading_msg == false)
         {
-            uint8_t ser_byte = sw_serial.read();
-
-            if (clearToSend)
+            if (ser_byte == 0xFF)
             {
-                clearToSend = false;
+                ESP_LOGD(TAG, "SEC1 RX HELLO FROM GDO 0x%02X", ser_byte);
 
-                // ESP_LOGD(TAG, "SEC1 TX not CLEAR TO SEND");
+                // count them, if say 5, start emulator?
+                byte_count++;
+                if (byte_count > 4)
+                {
+                    byte_count = 0;
+
+                    ESP_LOGD(TAG, "SEC1 RX got 5 of 0xFFs");
+                }
             }
-
-            if (reading_msg == false)
+            // valid?
+            else if (ser_byte >= 0x30 && ser_byte <= 0x3A)
             {
-                if (ser_byte == 0xFF)
+                byte_count = 1;
+                rx_packet[0] = ser_byte;
+
+                reading_msg = true;
+
+                // timestamp beinging of message
+                msg_start = _millis();
+
+                // is it single byte command? (PRESS/RELEASE FROM WALL PLATE)
+                if (ser_byte >= 0x30 && ser_byte <= 0x37)
                 {
-                    ESP_LOGD(TAG, "SEC1 RX HELLO FROM GDO 0x%02X", ser_byte);
-
-                    // count them, if say 5, start emulator?
-                    byte_count++;
-                    if (byte_count > 4)
-                    {
-                        byte_count = 0;
-
-                        ESP_LOGD(TAG, "SEC1 RX got 5 of 0xFFs");
-                    }
-                }
-                // valid?
-                else if (ser_byte >= 0x30 && ser_byte <= 0x3A)
-                {
-                    byte_count = 1;
-                    rx_packet[0] = ser_byte;
-
-                    reading_msg = true;
-
-                    // timestamp beinging of message
-                    msg_start = _millis();
-
-                    // is it single byte command? (PRESS/RELEASE FROM WALL PLATE)
-                    if (ser_byte >= 0x30 && ser_byte <= 0x37)
-                    {
-                        reading_msg = false;
-                        gotMessage = true;
-                        sec1_process_message(rx_packet[0], rx_packet[1]);
-                    }
-                }
-                else
-                {
-                    ESP_LOGD(TAG, "SEC1 RX invalid cmd byte 0x%02X", ser_byte);
+                    reading_msg = false;
+                    gotMessage = true;
+                    sec1_process_message(rx_packet[0], rx_packet[1]);
                 }
             }
             else
             {
-                // we only allow 2 bytes max, and the reading_msg controls that
-
-                // this is the value to response of the GDO query
-                byte_count = 2;
-                rx_packet[1] = ser_byte;
-
-                gotMessage = true;
-                sec1_process_message(rx_packet[0], rx_packet[1]);
-
-                // reset cts signal, after 10ms ok to send
-                cts_signal = _millis();
+                ESP_LOGD(TAG, "SEC1 RX invalid cmd byte 0x%02X", ser_byte);
             }
+        }
+        else
+        {
+            // we only allow 2 bytes max, and the reading_msg controls that
 
-            if (gotMessage == true)
-            {
-                gotMessage = false;
+            // this is the value to response of the GDO query
+            byte_count = 2;
+            rx_packet[1] = ser_byte;
 
-                // reset start of message
-                reading_msg = false;
-                byte_count = 0;
+            gotMessage = true;
+            sec1_process_message(rx_packet[0], rx_packet[1]);
 
-                // temp code, preload to aid detect bad rx (good news i havent seen any bads)
-                rx_packet[0] = 0xBB;
-                rx_packet[1] = 0xAA;
-            }
-        } while ((available = sw_serial.available())); // double brackets to avoid [-Wparentheses] compiler warning
-    }
-    if (sw_serial.available())
-    {
-        ESP_LOGD(TAG, "SEC1 RX, after while loop, sw_serial.available()=0x%02X!!! exiting comm_loop", sw_serial.peek());
+            // reset cts signal, after 10ms ok to send
+            cts_signal = _millis();
+        }
 
-        return;
+        if (gotMessage == true)
+        {
+            gotMessage = false;
+
+            // reset start of message
+            reading_msg = false;
+            byte_count = 0;
+        }
     }
 
     // incomplete message timeout?
@@ -1173,8 +1155,9 @@ void comms_loop_sec1()
     }
 
     // if still reading the message in, no need to process further
-    // as its not really good time to TX, and next byte is expected within 10ms
-    if (reading_msg == true)
+    // as its not a good time to TX, and next byte is expected within 10ms
+    // check if a byte became available, exit to process (on next comm_loop())
+    if (reading_msg == true || sw_serial.available())
     {
         return;
     }
@@ -1194,64 +1177,19 @@ void comms_loop_sec1()
     if ((msgs = (uint32_t)q_getCount(&pkt_q)) > 0)
 #endif
     {
-        // rx timing:
-        // [xx]9ms[xx]200ms[xx]9ms[xx]...
-        // wall panel poll is aprox every 250ms
-        // so after last byte received there is window of aprox 200ms - time it takes to send
-        //
-
-        // if there is no wall panel, no need to check 200ms since last rx
-        // (yes some duped code here, but its clearer)
-        /*
-        if (!wallPanelDetected)
+        okToSend = false;
+        if ((_millis() - last_tx) > SECPLUS1_TX_MINIMUM_DELAY)
         {
-            // no wall panel
-            okToSend = ((int32_t)(now - last_rx) > 20);        // after 20ms since last rx
-            okToSend &= ((int32_t)(now - last_tx) > 20);       // after 20ms since last tx
-            okToSend &= ((int32_t)(now - last_tx) > (int32_t)cmdDelay); // after any command delays
+            okToSend = true;
         }
-        else
-        */
 
-        now = _millis();
-
-        okToSend = true;
-        if (last_tx)
-            okToSend = ((int32_t)(now - last_tx) > SECPLUS1_TX_MINIMUM_DELAY); // after TX minmum delay between messages
-        if (!okToSend)
-            ESP_LOGD(TAG, "waiting for last_tx > 30ms");
-        // not using any cmd delays anymore
-        // okToSend &= ((int32_t)(now - last_tx) > (int32_t)cmdDelay);        // after any extended command delays ( > MINIMUM )
-
-        // only if there is a wall planel that we need to check clear to send
+        // if there is a wall panel, need to make sure the clear to send timing is met
         if (wallPanelDetected)
         {
             okToSend &= clearToSend;
-
-            // extra safety
-            if (sw_serial.available())
-            {
-                ESP_LOGD(TAG, "SEC1 TX about to send, rx data present 0x%02X, delaying send", sw_serial.peek());
-                okToSend = false;
-            }
         }
 
-        // just to log
-        if (clearToSend != lastClearToSend)
-        {
-            if (clearToSend == true)
-            {
-                ESP_LOGD(TAG, "SEC1 TX CTS");
-            }
-            else
-            {
-                ESP_LOGD(TAG, "SEC1 TX !CTS");
-            }
-
-            lastClearToSend = clearToSend;
-        }
-
-        // OK to send based on above rules
+        // meets our timing requirements
         if (okToSend)
         {
 #ifdef ESP8266
@@ -1262,7 +1200,8 @@ void comms_loop_sec1()
 #endif
                 if (process_PacketAction(pkt_ac))
                 {
-                    // get next delay "between" transmits
+
+                    // get next delay "between" transmits (currently not using)
                     // cmdDelay = pkt_ac.delay;
 #ifdef ESP8266
                     q_drop(&pkt_q);
@@ -1462,11 +1401,9 @@ void comms_loop_sec2()
                 if (lock != garage_door.target_lock)
                 {
                     ESP_LOGI(TAG, "Lock Cmd %d", lock);
-                    // garage_door.target_lock = lock;
                     notify_homekit_target_lock(lock);
                     if (motionTriggers.bit.lockKey)
                     {
-                        // garage_door.motion = true;
                         notify_homekit_motion(true);
                     }
                 }
@@ -1495,7 +1432,6 @@ void comms_loop_sec2()
                 if (l != garage_door.light)
                 {
                     ESP_LOGI(TAG, "Light Cmd %s", l ? "On" : "Off");
-                    // garage_door.light = l;
                     notify_homekit_light(l);
                     if (motionTriggers.bit.lightKey)
                     {
@@ -1700,7 +1636,6 @@ void comms_loop()
     if (garage_door.motion && garage_door.motion_timer > 0 && (int32_t)(_millis() - garage_door.motion_timer) >= 0)
     {
         ESP_LOGI(TAG, "Motion Cleared");
-        // garage_door.motion = false;
         notify_homekit_motion(false);
     }
     // Service the Obstruction Timer
@@ -1735,15 +1670,6 @@ bool transmitSec1(byte toSend)
         return false;
     }
 
-    if (wallPanelDetected)
-    {
-        ESP_LOGD(TAG, "SEC1 TX DISCONNECT WP");
-
-        // disconnect wall panel
-        digitalWrite(STATUS_DOOR_PIN, 0);
-        delay(1);
-    }
-
     // sending a poll?
     bool poll_cmd = (toSend == 0x38) || (toSend == 0x39) || (toSend == 0x3A);
     // if not a poll command (and polls only with wall panel emulation),
@@ -1760,24 +1686,16 @@ bool transmitSec1(byte toSend)
     sw_serial.write(toSend);
     sw_serial.flush(); // wait till sent
 
+    // ESP_LOGD(TAG, "SEC1 TX sent: 0x%02X", toSend);
+
     // timestamp tx
     last_tx = _millis();
+
     // re-enable rx
     if (!poll_cmd)
     {
         // enable rx
         sw_serial.enableRx(true);
-    }
-
-    if (wallPanelDetected)
-    {
-        ESP_LOGD(TAG, "SEC1 TX CONNECT WP");
-
-        // connect wall panel
-        digitalWrite(STATUS_DOOR_PIN, 1);
-        delay(1);
-
-        sw_serial.flush();
     }
 
     return true;
@@ -1864,7 +1782,7 @@ bool process_PacketAction(PacketAction &pkt_ac)
                 success = transmitSec1(secplus1Codes::DoorButtonPress);
                 if (success)
                 {
-                    ESP_LOGI(TAG, "SEC1 TX sent DOOR button press");
+                    // ESP_LOGI(TAG, "SEC1 TX sent DOOR button press");
                 }
                 else
                 {
@@ -1878,7 +1796,7 @@ bool process_PacketAction(PacketAction &pkt_ac)
                 success = transmitSec1(secplus1Codes::DoorButtonRelease);
                 if (success)
                 {
-                    ESP_LOGI(TAG, "SEC1 TX sent DOOR button release");
+                    // ESP_LOGI(TAG, "SEC1 TX sent DOOR button release");
                 }
                 else
                 {
@@ -1897,7 +1815,7 @@ bool process_PacketAction(PacketAction &pkt_ac)
                 success = transmitSec1(secplus1Codes::LightButtonPress);
                 if (success)
                 {
-                    ESP_LOGI(TAG, "SEC1 TX sent LIGHT button press");
+                    // ESP_LOGI(TAG, "SEC1 TX sent LIGHT button press");
                 }
                 else
                 {
@@ -1911,7 +1829,7 @@ bool process_PacketAction(PacketAction &pkt_ac)
                 success = transmitSec1(secplus1Codes::LightButtonRelease);
                 if (success)
                 {
-                    ESP_LOGI(TAG, "SEC1 TX sent LIGHT button release");
+                    // ESP_LOGI(TAG, "SEC1 TX sent LIGHT button release");
                 }
                 else
                 {
@@ -1930,7 +1848,7 @@ bool process_PacketAction(PacketAction &pkt_ac)
                 success = transmitSec1(secplus1Codes::LockButtonPress);
                 if (success)
                 {
-                    ESP_LOGI(TAG, "SEC1 TX sent LOCK button press");
+                    // ESP_LOGI(TAG, "SEC1 TX sent LOCK button press");
                 }
                 else
                 {
@@ -1944,7 +1862,7 @@ bool process_PacketAction(PacketAction &pkt_ac)
                 success = transmitSec1(secplus1Codes::LockButtonRelease);
                 if (success)
                 {
-                    ESP_LOGI(TAG, "SEC1 TX sent LOCK button release");
+                    // ESP_LOGI(TAG, "SEC1 TX sent LOCK button release");
                 }
                 else
                 {
