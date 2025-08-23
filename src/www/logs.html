@@ -41,13 +41,13 @@
       <button class="tablinks" onclick="openTab(event, 'rebootTab')">Reboot Log</button>
       <button class="tablinks" onclick="openTab(event, 'crashTab')">Crash Log</button>
       <input id="clearLogBtn" type="button" value="Clear log"
-        style="display: none; margin-left: 2em; margin-top: 0.8em;"
+        style="display: none; margin-left: 1em; margin-top: 0.8em;"
         onclick="return confirm('Clear log, are you sure?') && clearLog(false);">
-      <input id="clearLogReloadBtn" type="button" value="Clear log & reload"
-        style="display: none; margin-left: 2em; margin-top: 0.8em;"
+      <input id="reloadLogButton" type="button" value="Reload"
+        style="display: none;"
         onclick="return confirm('Clear log, are you sure?') && clearLog(true);">
       <input id="clearBtn" type="button" value="Clear crash log"
-        style="display: none; margin-left: 2em; margin-top: 0.8em;"
+        style="display: none; margin-left: 1em; margin-top: 0.8em;"
         onclick="return confirm('Clear crash log, are you sure?') && clearCrashLog();">
     </div>
     <!-- Main section of page ------------------------------------------------------------------>
