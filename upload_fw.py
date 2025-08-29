@@ -89,4 +89,5 @@ def on_upload(source, target, env):
         exit(1)
 
 #
-env.Replace(UPLOADCMD=on_upload)
+if env["UPLOAD_PROTOCOL"] == "custom":
+    env.Replace(UPLOADCMD=on_upload)
