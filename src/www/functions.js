@@ -256,7 +256,7 @@ function setElementsFromStatus(status) {
                 document.getElementById("useToggleToCloseRow").style.display = (value == 2) ? "table-row" : "none";
                 break;
             case "garageSec1Emulated":
-                document.getElementById("GDOSecurityType").innerHTML += (value == true) ? "&nbsp;(Emulation)" : "";
+                document.getElementById("sec1emulation").style.display = (value == true) ? "" : "none";
                 break;
             case "deviceName":
                 document.getElementById(key).innerHTML = value;
