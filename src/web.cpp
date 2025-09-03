@@ -1022,7 +1022,7 @@ void handle_setgdo()
             break;
     }
 
-    ESP_LOGI(TAG, "SetGDO Complete");
+    ESP_LOGV(TAG, "SetGDO Complete");
 
     if (error)
     {
