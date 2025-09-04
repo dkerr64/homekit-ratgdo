@@ -8,6 +8,8 @@ Version 2.0.0 is a major upgrade for ESP8266-based ratgdo boards.  Almost all so
 
 While source files have been merged there remain signiciant differences between the two board types, most notably in the library used to communicate with HomeKit which are completely different.
 
+* Before an Over-The-Air (OTA) upgrade it is good to first reboot your current version.
+
 ### What's Changed
 
 * New feature... Door open & close duration reported on ratgdo web page
@@ -17,7 +19,7 @@ While source files have been merged there remain signiciant differences between 
 
 ### Known Issues
 
-* Not all features from ESP32-based boards have been enabled yet.
+* If you upgrade to v2.0.0 and then later downgrade back to v1.9.1 or earlier, then Static IP address settings will be lost.
 
 ## v1.9.1 (2025-08-21)
 
