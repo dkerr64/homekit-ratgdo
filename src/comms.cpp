@@ -1075,24 +1075,18 @@ void sec1_process_message(uint8_t key, uint8_t value)
 void comms_loop_sec1()
 {
     static bool reading_msg = false;
-    static uint32_t byte_count = 0;
     static RxPacket rx_packet;
-    bool gotMessage = false;
 
 #ifdef SEC1_DISCONNECT_WP
-    // not used right now (as its re-enabled in transmitSec1())
-    if (!wallPanelConnected && (_millis() - last_tx) > 5)
+    if (!wallPanelConnected && (_millis() - last_tx) >= 5)
     {
         wallPanelConnected = true;
         digitalWrite(STATUS_DOOR_PIN, wallPanelConnected);
-        // dump any garbage
-        delay(1);
-        sw_serial.flush();
     }
 #endif
 
     // CTS timer
-    // when wall panel present, need 20ms elasped after last complete message arrives.
+    // when wall panel present, need 5ms elasped after last complete message arrives.
     // if one arrives before that (ie multiple in rx buffers, the msg_complete time stamp is reset)
     if (!clearToSend)
     {
@@ -1120,9 +1114,8 @@ void comms_loop_sec1()
             else
                 ESP_LOGD(TAG, "SEC1 RX Parity error 0x%02X", ser_byte);
 
-            // toss message
+            // toss message, start over
             reading_msg = false;
-            byte_count = 0;
 
             continue;
         }
@@ -1135,6 +1128,7 @@ void comms_loop_sec1()
                 ESP_LOGD(TAG, "SEC1 RX GDO sync byte(0xFF) received");
 #endif
                 // count them, if say 10, start emulator? (future idea)
+                static uint32_t byte_count = 0;
                 byte_count++;
                 if (byte_count == 10)
                 {
@@ -1146,7 +1140,6 @@ void comms_loop_sec1()
             // valid?
             else if (ser_byte >= 0x30 && ser_byte <= 0x3A)
             {
-                byte_count = 1;
                 rx_packet[0] = ser_byte;
 
                 reading_msg = true;
@@ -1157,10 +1150,11 @@ void comms_loop_sec1()
                 // is it single byte command? (PRESS/RELEASE FROM WALL PLATE)
                 if (ser_byte >= 0x30 && ser_byte <= 0x37)
                 {
-                    reading_msg = false;
-                    gotMessage = true;
                     // 0xFF to mark that its a one byte msg
                     sec1_process_message(rx_packet[0], 0xFF);
+
+                    // reset start of message
+                    reading_msg = false;
                 }
             }
             else
@@ -1171,35 +1165,21 @@ void comms_loop_sec1()
         else
         {
             // we only allow 2 bytes max, and the reading_msg controls that
-
             // this is the value to response of the GDO query
-            byte_count = 2;
             rx_packet[1] = ser_byte;
 
-            gotMessage = true;
             sec1_process_message(rx_packet[0], rx_packet[1]);
 
             // time stamp
             msg_complete = _millis();
-        }
-
-        if (gotMessage == true)
-        {
-            gotMessage = false;
-
-            rx_packet[0] = 0xAA;
-            rx_packet[1] = 0xAA;
 
             // reset start of message
             reading_msg = false;
-            byte_count = 0;
-
-            clearToSend = true;
         }
     }
 
     // incomplete message timeout?
-    if (reading_msg == true && gotMessage == false && ((_millis() - msg_start) > SECPLUS1_RX_MESSAGE_TIMEOUT))
+    if (reading_msg == true && ((_millis() - msg_start) > SECPLUS1_RX_MESSAGE_TIMEOUT))
     {
         ESP_LOGD(TAG, "SEC1 RX message timeout, 1 byte of 2 byte message received [rx_packet[0]=0x%02X]", rx_packet[0]);
 
@@ -1210,13 +1190,20 @@ void comms_loop_sec1()
         //
         // ⁡⁢⁣⁡⁢⁣⁢MJS-8/12/2025 - measued time 9-10ms for 2byte messages⁡
         reading_msg = false;
-        byte_count = 0;
+    }
+
+    // read if onReceive() ISR indicates RX of a BIT
+    bool isRxPending = rxPending.load();
+    if (isRxPending)
+    {
+        rxPending.store(false);
     }
 
     // if still reading the message in, no need to process further
     // as its not a good time to TX, and next byte is expected within 10ms
-    // check if a byte became available, exit to process (on next comm_loop())
-    if (reading_msg == true || sw_serial.available())
+    // check if a rx byte became available
+    // or if a rx bit has been has been received, exit and process (on next comm_loop())
+    if (reading_msg == true || sw_serial.available() || isRxPending)
     {
         return;
     }
@@ -1243,13 +1230,15 @@ void comms_loop_sec1()
         // if there is a wall panel, need to make sure the clear to send timing is met
         if (wallPanelDetected)
         {
-            // set in ISR (on START BIT)
+            // set in ISR (SET on RX of START BIT)
             bool isRxPending = rxPending.load();
             if (isRxPending)
             {
                 rxPending.store(false);
 
                 clearToSend = false;
+
+                ESP_LOGD(TAG, "SEC1 TX: late detection isRxPending");
             }
 
             // close the tx window after Xms from start msg received
@@ -1726,16 +1715,25 @@ bool transmitSec1(byte toSend)
     txbegin = _millis();
 #endif
 
-    // safety
+    // safety #1
     if (sw_serial.available())
     {
         ESP_LOGD(TAG, "SEC1 TX incoming data detected, cannot send right now");
         noSend = true;
     }
-
+    // safety #2
     if (digitalRead(UART_RX_PIN))
     {
         ESP_LOGD(TAG, "SEC1 TX UART_RX_PIN HIGH detected, cannot send right now");
+        noSend = true;
+    }
+    // safety #3
+    bool isRxPending = rxPending.load();
+    if (isRxPending)
+    {
+        rxPending.store(false);
+
+        ESP_LOGD(TAG, "SEC1 TX isRxPending detected, cannot send right now");
         noSend = true;
     }
 
@@ -1753,11 +1751,12 @@ bool transmitSec1(byte toSend)
     {
         // Use LED to signal activity
         led.flash(FLASH_MS);
+
         // disable rx
-        sw_serial.enableRx(false);
+        // sw_serial.enableRx(false);
 
 #ifdef SEC1_DISCONNECT_WP
-        // will reconnect in after tx complete + 5ms
+        // will reconnect in after tx complete + 5m in comms_loop_sec1()
         wallPanelConnected = false;
         digitalWrite(STATUS_DOOR_PIN, wallPanelConnected);
 #endif
@@ -1765,17 +1764,18 @@ bool transmitSec1(byte toSend)
 
     sw_serial.write(toSend);
 
-    // for debugging when enableRX
-    /*
-    int by = sw_serial.read();
-    if (by > 0 && by != toSend)
-        ESP_LOGD(TAG, "SEC1 TX ECHO ERROR got: 0x%02X expected: 0x%02X", by, toSend);
-    else if (by == -1)
-        ESP_LOGD(TAG, "SEC1 TX NO ECHO");
-    */
+    if (!poll_cmd)
+    {
+        // read off echo, it is ready right after the write()
+        int echoByte = sw_serial.read();
+        if (echoByte == -1)
+            ESP_LOGD(TAG, "SEC1 TX LOST ECHO OF: 0x%02X", toSend);
+        else if (echoByte != toSend)
+            ESP_LOGD(TAG, "SEC1 TX MISMATCH ECHO OF: tx:0x%02X rx:0x%02X", toSend, echoByte);
+    }
 
 #ifdef DEBUG_SEC1_EXTENDED_COMMS
-    ESP_LOGD(TAG, "SEC1 TX: 0x%02X", toSend);
+    ESP_LOGD(TAG, "SEC1 TX: 0x%02X", echoByte);
 #endif
 
     // timestamp tx
@@ -1785,14 +1785,7 @@ bool transmitSec1(byte toSend)
     if (!poll_cmd)
     {
         // enable rx
-        sw_serial.enableRx(true);
-
-#ifdef SEC1_DISCONNECT_WP
-        // delay ok here (but could be restored in comm_loop_sec1())
-        delay(5);
-        wallPanelConnected = true;
-        digitalWrite(STATUS_DOOR_PIN, wallPanelConnected);
-#endif
+        // sw_serial.enableRx(true);
     }
 
 #ifdef SEC1_COMMS_PERF_TIMES
