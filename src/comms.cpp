@@ -184,7 +184,7 @@ uint8_t lockState;
 
 // keep this here incase at somepoint its needed
 // it is used for emulation of wall panel
-//byte secplus1States[] = {0x35, 0x35, 0x35, 0x35, 0x33, 0x33, 0x53, 0x53, 0x38, 0x3A, 0x3A, 0x3A, 0x39, 0x38, 0x3A, 0x38, 0x3A, 0x39};
+// byte secplus1States[] = {0x35, 0x35, 0x35, 0x35, 0x33, 0x33, 0x53, 0x53, 0x38, 0x3A, 0x3A, 0x3A, 0x39, 0x38, 0x3A, 0x38, 0x3A, 0x39};
 // this is what MY 889LM exhibited when powered up (release of all buttons, and then polls)
 byte secplus1States[] = {0x35, 0x35, 0x33, 0x33, 0x38, 0x3A, 0x39};
 
@@ -1079,7 +1079,7 @@ void comms_loop_sec1()
     static RxPacket rx_packet;
 
 #ifdef SEC1_DISCONNECT_WP
-    if (!wallPanelConnected && (_millis() - last_tx) >= 5)
+    if (!wallPanelConnected && (_millis() - last_tx) >= 3)
     {
         wallPanelConnected = true;
         digitalWrite(STATUS_DOOR_PIN, wallPanelConnected);
@@ -1109,11 +1109,10 @@ void comms_loop_sec1()
         // parity check on byte
         if (sw_serial.readParity() != sw_serial.parityEven(ser_byte))
         {
-
             if (reading_msg)
-                ESP_LOGD(TAG, "SEC1 RX Parity error on 2nd byte of MSG 0x%02X:0x%02X", rx_packet[0], ser_byte);
+                ESP_LOGD(TAG, "SEC1 RX Parity error on 2nd byte of poll msg [0x%02X:0x%02X]", rx_packet[0], ser_byte);
             else
-                ESP_LOGD(TAG, "SEC1 RX Parity error 0x%02X", ser_byte);
+                ESP_LOGD(TAG, "SEC1 RX Parity error [0x%02X]", ser_byte);
 
             // toss message, start over
             reading_msg = false;
@@ -1121,6 +1120,56 @@ void comms_loop_sec1()
             continue;
         }
 
+        // upper nibble alwasy 0x3 for press/release/poll bytes (0x30 - 0x3A)
+        // no GDO response has upper nibble 0x3, and its validated in sec1_process_message()
+        // if a byte comes in as 0x3x even if reading message, start over
+
+        // press/release byte
+        if (ser_byte >= 0x30 && ser_byte <= 0x37)
+        {
+            // only 1 byte, 0xFF is dummy data
+            sec1_process_message(ser_byte, 0xFF);
+
+            // reset start of message
+            reading_msg = false;
+        }
+        // poll byte
+        else if (ser_byte >= 0x38 && ser_byte <= 0x3A)
+        {
+            // if we already waiting for a GDO reponse, and got a new poll...
+            if (reading_msg)
+            {
+                ESP_LOGD(TAG, "SEC1 RX Prior poll msg incomplete [0x%02X] received, but lost GDO response", rx_packet[0]);
+            }
+
+            rx_packet[0] = ser_byte;
+
+            // timestamp beinging of message
+            msg_start = _millis();
+
+            reading_msg = true;
+        }
+        // GDO reponse byte to poll
+        else if (reading_msg)
+        {
+            // we only allow 2 bytes max, and the reading_msg controls that
+            // this is the value to response of the GDO query
+            rx_packet[1] = ser_byte;
+
+            sec1_process_message(rx_packet[0], rx_packet[1]);
+
+            // time stamp
+            msg_complete = _millis();
+
+            // reset start of message
+            reading_msg = false;
+        }
+        else
+        {
+            ESP_LOGD(TAG, "SEC1 RX invalid cmd byte 0x%02X", ser_byte);
+        }
+
+        /*
         if (reading_msg == false)
         {
             if (ser_byte == 0xFF)
@@ -1177,6 +1226,7 @@ void comms_loop_sec1()
             // reset start of message
             reading_msg = false;
         }
+        */
     }
 
     // incomplete message timeout?
@@ -1232,8 +1282,7 @@ void comms_loop_sec1()
         if (wallPanelDetected)
         {
             // set in ISR (SET on RX of START BIT)
-            bool isRxPending = rxPending.load();
-            if (isRxPending)
+            if (rxPending.load())
             {
                 rxPending.store(false);
 
@@ -1724,8 +1773,7 @@ bool transmitSec1(byte toSend)
         noSend = true;
     }
     // safety #3
-    bool isRxPending = rxPending.load();
-    if (isRxPending)
+    if (rxPending.load())
     {
         rxPending.store(false);
 
@@ -1755,6 +1803,7 @@ bool transmitSec1(byte toSend)
         // will reconnect in after tx complete + 5m in comms_loop_sec1()
         wallPanelConnected = false;
         digitalWrite(STATUS_DOOR_PIN, wallPanelConnected);
+        delay(1);
 #endif
     }
 
