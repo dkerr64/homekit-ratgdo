@@ -36,8 +36,9 @@
 #include "led.h"
 #include "provision.h"
 #include "softAP.h"
+#ifdef ESP8266
 #include "wifi_8266.h"
-#ifndef ESP8266
+#else
 // Feature not available on ESP8266
 #include "vehicle.h"
 #endif
@@ -51,8 +52,8 @@ static const char *TAG = "ratgdo-main";
 
 // Initialize GDO status
 GarageDoor garage_door = {
-    .active = false,
     .wallPanelEmulated = false,
+    .active = false,
     .current_state = (GarageDoorCurrentState)0xFF,
     .target_state = (GarageDoorTargetState)0xFF,
     .obstructed = false,

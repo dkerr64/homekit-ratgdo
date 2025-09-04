@@ -160,7 +160,7 @@ This allows you to select what causes the HomeKit motion sensor accessory to tri
 
 Motion can also be triggered by the obstruction sensor. This is disabled by default but may be selected on the web page.
 
-### Occupancy Duration _(currently not supported on ratgdo v2.5 boards)_
+### Occupancy Duration _(not supported on ratgdo v2.5 boards)_
 
 For ratgdo32 boards, a HomeKit occupancy sensor may be set active when motion is detected. It will remain active for a user set duration between zero and 120 minutes after the last motion detected. HomeKit accessory is disabled if set to zero. Disabled by default.
 
@@ -192,7 +192,7 @@ Set the protocol for your model of garage door opener. This defaults to Security
 
 For Dry Contact door protocol, set the sensor debounce duration. When the door opens or closes it can take time for the sensor switch to settle into its correct state. You can set this between 50 and 1000 milliseconds. You can observe the log messages when door reaches closed or open state to get an idea of what the correct setting should be for your door.
 
-### Enable hardwired open/close control _(currently not supported on ratgdo v2.5 boards)_
+### Enable hardwired open/close control
 
 For Security+ 1.0 and Security +2.0 it is possible to repurpose the sensors used for dry-contact door open / close to buttons that trigger a door open / close action. Select this check box to enable this option.
 

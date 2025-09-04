@@ -70,6 +70,7 @@ SoftwareSerial sw_serial;
 #define SECPLUS1_TX_WINDOW_OPEN 5
 #define SECPLUS1_TX_WINDOW_CLOSE 175
 #define SECPLUS1_TX_MINIMUM_DELAY 30
+#define SECPLUS2_TX_MINIMUM_DELAY 50
 
 #define COMMS_STATUS_TIMEOUT 2000
 bool comms_status_done = false;
@@ -183,9 +184,9 @@ uint8_t lockState;
 
 // keep this here incase at somepoint its needed
 // it is used for emulation of wall panel
-// byte secplus1States[19] = {0x35, 0x35, 0x35, 0x35, 0x33, 0x33, 0x53, 0x53, 0x38, 0x3A, 0x3A, 0x3A, 0x39, 0x38, 0x3A, 0x38, 0x3A, 0x39, 0x3A};
+byte secplus1States[] = {0x35, 0x35, 0x35, 0x35, 0x33, 0x33, 0x53, 0x53, 0x38, 0x3A, 0x3A, 0x3A, 0x39, 0x38, 0x3A, 0x38, 0x3A, 0x39};
 // this is what MY 889LM exhibited when powered up (release of all buttons, and then polls)
-byte secplus1States[] = {0x35, 0x35, 0x33, 0x33, 0x38, 0x3A, 0x39};
+// byte secplus1States[] = {0x35, 0x35, 0x33, 0x33, 0x38, 0x3A, 0x39};
 
 // values for SECURITY+1.0 communication
 enum secplus1Codes : uint8_t
@@ -1301,22 +1302,22 @@ void comms_loop_sec2()
 {
     static uint32_t retryCount = 0;
 
-    if (!sw_serial.available())
+    if (!sw_serial.available() && ((_millis() - last_tx) > SECPLUS2_TX_MINIMUM_DELAY))
     {
         // no incoming data, check if we have command queued
         PacketAction pkt_ac;
         uint32_t msgs;
 
 #ifdef ESP8266
-        while ((msgs = (uint32_t)q_peek(&pkt_q, &pkt_ac)) > 0)
+        if ((msgs = (uint32_t)q_peek(&pkt_q, &pkt_ac)) > 0)
 #else
-        while ((msgs = uxQueueMessagesWaiting(pkt_q)) > 0)
+        if ((msgs = uxQueueMessagesWaiting(pkt_q)) > 0)
 #endif
         {
-            // Two packets in the queue is normal (e.g. set light followed by get status)
-            // but more than that may indicate a problem
-            if (msgs > 2)
-                ESP_LOGW(TAG, "WARNING: message packets in queue is > 2 (%lu)", msgs);
+            // Three packets for Sec+2.0 is normal (e.g. door action press/release followed by get status)
+            // But more than that may indicate a problem
+            if (msgs > 3)
+                ESP_LOGW(TAG, "WARNING: message packets in queue is > 3 (%lu)", msgs);
 
 #ifdef ESP32
             xQueueReceive(pkt_q, &pkt_ac, 0); // ignore errors
@@ -1345,9 +1346,6 @@ void comms_loop_sec2()
                 q_drop(&pkt_q);
             }
 #endif
-            // If we are looping over multiple packets, yield on each loop
-            if (msgs > 1)
-                YIELD();
         }
     }
     else
@@ -1453,6 +1451,8 @@ void comms_loop_sec2()
                     {
                         lock = TGT_LOCKED;
                     }
+                    // Send a get status to make sure we are in sync
+                    send_get_status();
                     break;
                 }
                 if (lock != garage_door.target_lock)
@@ -1464,8 +1464,6 @@ void comms_loop_sec2()
                         notify_homekit_motion(true);
                     }
                 }
-                // Send a get status to make sure we are in sync
-                send_get_status();
                 break;
             }
 
@@ -1484,6 +1482,8 @@ void comms_loop_sec2()
                 case LightState::Toggle:
                 case LightState::Toggle2:
                     l = !garage_door.light;
+                    // Send a get status to make sure we are in sync
+                    send_get_status();
                     break;
                 }
                 if (l != garage_door.light)
@@ -1495,10 +1495,6 @@ void comms_loop_sec2()
                         notify_homekit_motion(true);
                     }
                 }
-                // Send a get status to make sure we are in sync
-                // Should really only need to do this on a toggle,
-                // But safer to do it always
-                send_get_status();
                 break;
             }
 
@@ -1826,6 +1822,8 @@ bool transmitSec2(PacketAction &pkt_ac)
             led.flash(FLASH_MS);
             sw_serial.write(buf, SECPLUS2_CODE_LEN);
             delayMicroseconds(100);
+            // timestamp tx
+            last_tx = _millis();
         }
 
         if (pkt_ac.inc_counter)
@@ -2168,9 +2166,7 @@ void TTCtimerFn(void (*callback)(), bool light)
 #ifdef ESP8266
                                       schedule_recurrent_function_us([callback]()
                                                                      {
-                                                                         if (callback == door_command_close)
-                                                                             ESP_LOGI(TAG, "Calling delayed function: door_command_close()");
-
+                                                                         ESP_LOGI(TAG, "Calling delayed function 0x%08lX", (uint32_t)callback);
                                                                          callback();
                                                                          return false; // run the fn only once
                                                                      },
