@@ -68,7 +68,7 @@ SoftwareSerial sw_serial;
 #define SECPLUS1_DIGITAL_WALLPLATE_TIMEOUT 15000
 #define SECPLUS1_RX_MESSAGE_TIMEOUT 20
 #define SECPLUS1_TX_WINDOW_OPEN 5
-#define SECPLUS1_TX_WINDOW_CLOSE 175
+#define SECPLUS1_TX_WINDOW_CLOSE 200
 #define SECPLUS1_TX_MINIMUM_DELAY 30
 #define SECPLUS2_TX_MINIMUM_DELAY 50
 
@@ -143,11 +143,11 @@ void IRAM_ATTR isr_obstruction()
 }
 
 // Becomes set from ISR / IRQ callback function.
-std::atomic<bool> rxPending(false);
+static bool rxPending;
 
 void IRAM_ATTR receiveHandler()
 {
-    rxPending.store(true);
+    rxPending = true;
 }
 
 #define MAX_COMMS_RETRY 10
@@ -166,6 +166,10 @@ static bool rolling_code_operation_in_progress = false;
 #ifndef USE_GDOLIB
 static const uint8_t RX_LENGTH = 2;
 typedef uint8_t RxPacket[RX_LENGTH * 4];
+// RX ISR control
+#ifdef ESP32
+static portMUX_TYPE m_interruptsMux = portMUX_INITIALIZER_UNLOCKED;
+#endif
 // time stamping
 _millis_t last_tx;
 _millis_t msg_start;
@@ -181,6 +185,7 @@ bool wallPanelConnected = false;
 GarageDoorCurrentState doorState = GarageDoorCurrentState::UNKNOWN;
 uint8_t lightState;
 uint8_t lockState;
+
 
 // keep this here incase at somepoint its needed
 // it is used for emulation of wall panel
@@ -362,6 +367,30 @@ static void gdo_event_handler(const gdo_status_t *status, gdo_cb_event_t event, 
     }
 }
 #endif
+
+#ifndef USE_GDOLIB
+/****************************************************************************
+ * checks if there is any RX data in process of being received
+ */
+__attribute__((always_inline)) inline bool isRxPending()
+{
+    bool pending;
+#ifdef ESP8266
+    noInterrupts();
+#else
+    taskENTER_CRITICAL(&m_interruptsMux);
+#endif
+    // rxPending is set in ISR
+    if ((pending = rxPending))
+        rxPending = false;
+#ifdef ESP8266
+    interrupts();
+#else
+    taskEXIT_CRITICAL(&m_interruptsMux);
+#endif
+    return pending;
+}
+#endif // USE_GDOLIB
 
 /****************************************************************************
  * Initialize communications with garage door.
@@ -1073,18 +1102,12 @@ void sec1_process_message(uint8_t key, uint8_t value)
     }
 }
 
+_millis_t wpDiscTime;
+
 void comms_loop_sec1()
 {
     static bool reading_msg = false;
     static RxPacket rx_packet;
-
-#ifdef SEC1_DISCONNECT_WP
-    if (!wallPanelConnected && (_millis() - last_tx) >= 3)
-    {
-        wallPanelConnected = true;
-        digitalWrite(STATUS_DOOR_PIN, wallPanelConnected);
-    }
-#endif
 
     // CTS timer
     // when wall panel present, need 5ms elasped after last complete message arrives.
@@ -1122,7 +1145,7 @@ void comms_loop_sec1()
 
         // upper nibble alwasy 0x3 for press/release/poll bytes (0x30 - 0x3A)
         // no GDO response has upper nibble 0x3, and its validated in sec1_process_message()
-        // if a byte comes in as 0x3x even if reading message, start over
+        // if a byte comes in as 0x3x even if reading 2 byte message, start over
 
         // press/release byte
         if (ser_byte >= 0x30 && ser_byte <= 0x37)
@@ -1168,67 +1191,9 @@ void comms_loop_sec1()
         {
             ESP_LOGD(TAG, "SEC1 RX invalid cmd byte 0x%02X", ser_byte);
         }
-
-        /*
-        if (reading_msg == false)
-        {
-            if (ser_byte == 0xFF)
-            {
-#ifdef DEBUG_SEC1_EXTENDED_COMMS
-                ESP_LOGD(TAG, "SEC1 RX GDO sync byte(0xFF) received");
-#endif
-                // count them, if say 10, start emulator? (future idea)
-                static uint32_t byte_count = 0;
-                byte_count++;
-                if (byte_count == 10)
-                {
-                    byte_count = 0;
-
-                    ESP_LOGD(TAG, "SEC1 RX 10 GDO sync bytes(0xFF)");
-                }
-            }
-            // valid?
-            else if (ser_byte >= 0x30 && ser_byte <= 0x3A)
-            {
-                rx_packet[0] = ser_byte;
-
-                reading_msg = true;
-
-                // timestamp beinging of message
-                msg_start = _millis();
-
-                // is it single byte command? (PRESS/RELEASE FROM WALL PLATE)
-                if (ser_byte >= 0x30 && ser_byte <= 0x37)
-                {
-                    // 0xFF to mark that its a one byte msg
-                    sec1_process_message(rx_packet[0], 0xFF);
-
-                    // reset start of message
-                    reading_msg = false;
-                }
-            }
-            else
-            {
-                ESP_LOGD(TAG, "SEC1 RX invalid cmd byte 0x%02X", ser_byte);
-            }
-        }
-        else
-        {
-            // we only allow 2 bytes max, and the reading_msg controls that
-            // this is the value to response of the GDO query
-            rx_packet[1] = ser_byte;
-
-            sec1_process_message(rx_packet[0], rx_packet[1]);
-
-            // time stamp
-            msg_complete = _millis();
-
-            // reset start of message
-            reading_msg = false;
-        }
-        */
     }
 
+    /*
     // incomplete message timeout?
     if (reading_msg == true && ((_millis() - msg_start) > SECPLUS1_RX_MESSAGE_TIMEOUT))
     {
@@ -1242,19 +1207,13 @@ void comms_loop_sec1()
         // ⁡⁢⁣⁡⁢⁣⁢MJS-8/12/2025 - measued time 9-10ms for 2byte messages⁡
         reading_msg = false;
     }
-
-    // read if onReceive() ISR indicates RX of a BIT
-    bool isRxPending = rxPending.load();
-    if (isRxPending)
-    {
-        rxPending.store(false);
-    }
+    */
 
     // if still reading the message in, no need to process further
     // as its not a good time to TX, and next byte is expected within 10ms
     // check if a rx byte became available
     // or if a rx bit has been has been received, exit and process (on next comm_loop())
-    if (reading_msg == true || sw_serial.available() || isRxPending)
+    if (reading_msg == true || sw_serial.available() || isRxPending())
     {
         return;
     }
@@ -1282,10 +1241,8 @@ void comms_loop_sec1()
         if (wallPanelDetected)
         {
             // set in ISR (SET on RX of START BIT)
-            if (rxPending.load())
+            if (isRxPending())
             {
-                rxPending.store(false);
-
                 clearToSend = false;
 
                 ESP_LOGD(TAG, "SEC1 TX: late detection isRxPending");
@@ -1750,15 +1707,10 @@ void comms_loop()
  * SECURITY+1.0
  */
 // TRANSMIT SEC+1.0 byte
-// PERF: takes aprox 14ms (including delay(5))
+// PERF: takes aprox 14ms-15ms (including delay(5))
 bool transmitSec1(byte toSend)
 {
     bool noSend = false;
-
-#ifdef SEC1_COMMS_PERF_TIMES
-    _millis_t txbegin;
-    txbegin = _millis();
-#endif
 
     // safety #1
     if (sw_serial.available())
@@ -1773,10 +1725,8 @@ bool transmitSec1(byte toSend)
         noSend = true;
     }
     // safety #3
-    if (rxPending.load())
+    if (isRxPending())
     {
-        rxPending.store(false);
-
         ESP_LOGD(TAG, "SEC1 TX isRxPending detected, cannot send right now");
         noSend = true;
     }
@@ -1796,19 +1746,23 @@ bool transmitSec1(byte toSend)
         // Use LED to signal activity
         led.flash(FLASH_MS);
 
+        // testing without disable
         // disable rx
         // sw_serial.enableRx(false);
 
 #ifdef SEC1_DISCONNECT_WP
-        // will reconnect in after tx complete + 5m in comms_loop_sec1()
+        // will reconnect in after tx complete + aprox 10ms - 13ms in comms_loop_sec1()
         wallPanelConnected = false;
         digitalWrite(STATUS_DOOR_PIN, wallPanelConnected);
-        delay(1);
+        // time stamp disconnect
+        wpDiscTime = _millis();
 #endif
     }
 
+    // aprox 10ms to write byte
     sw_serial.write(toSend);
 
+    // use this to "confirm" tx byte
     if (!poll_cmd)
     {
         // read off echo, it is ready right after the write()
@@ -1831,11 +1785,22 @@ bool transmitSec1(byte toSend)
     {
         // enable rx
         // sw_serial.enableRx(true);
-    }
 
-#ifdef SEC1_COMMS_PERF_TIMES
-    ESP_LOGD(TAG, "SEC1 TX process time: %lums", _millis() - txbegin);
+#ifdef SEC1_DISCONNECT_WP
+        // reconnect after tx complete
+        if (!wallPanelConnected)
+        {
+            delay(5);
+            // clear off any bits, as wp been disconnected (also resets rxPending)
+            if (isRxPending())
+                sw_serial.flush();
+            wallPanelConnected = true;
+            digitalWrite(STATUS_DOOR_PIN, wallPanelConnected);
+
+            // ESP_LOGD(TAG, "WP connected now, been disconnected for %lums", _millis() - wpDiscTime);
+        }
 #endif
+    }
 
     return true;
 }
@@ -2215,14 +2180,24 @@ void TTCtimerFn(void (*callback)(), bool light)
 #ifdef ESP8266
                                       schedule_recurrent_function_us([callback]()
                                                                      {
-                                                                         ESP_LOGI(TAG, "Calling delayed function 0x%08lX", (uint32_t)callback);
+                                                                         if (callback == sync_and_restart)
+                                                                             ESP_LOGI(TAG, "Calling delayed function: sync_and_restart()");
+                                                                         else if (callback == door_command_close)
+                                                                             ESP_LOGI(TAG, "Calling delayed function: door_command_close()");
+                                                                         else
+                                                                             ESP_LOGI(TAG, "Calling delayed function at: 0x%08lX", (uint32_t)callback);
+
                                                                          callback();
                                                                          return false; // run the fn only once
                                                                      },
                                                                      0); // zero micro seconds (run asap)
 #else
-                                      if (callback == door_command_close)
+                                      if (callback == sync_and_restart)
+                                          ESP_LOGI(TAG, "Calling delayed function: sync_and_restart()");
+                                      else if (callback == door_command_close)
                                           ESP_LOGI(TAG, "Calling delayed function: door_command_close()");
+                                      else
+                                          ESP_LOGI(TAG, "Calling delayed function at: 0x%08lX", (uint32_t)callback);
 
                                       callback();
 #endif
