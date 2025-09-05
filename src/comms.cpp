@@ -142,14 +142,38 @@ void IRAM_ATTR isr_obstruction()
     obstruction_sensor.low_count++;
 }
 
+#ifndef USE_GDOLIB
 // Becomes set from ISR / IRQ callback function.
 static bool rxPending;
-
 void IRAM_ATTR receiveHandler()
 {
     rxPending = true;
 }
+/****************************************************************************
+ * checks if there is any RX data in process of being received
+ */
+__attribute__((always_inline)) inline bool isRxPending()
+{
+    bool pending;
+#ifdef ESP8266
+    noInterrupts();
+#else
+    static portMUX_TYPE m_interruptsMux = portMUX_INITIALIZER_UNLOCKED;
+    taskENTER_CRITICAL(&m_interruptsMux);
+#endif
+    // rxPending is set in ISR
+    if ((pending = rxPending))
+        rxPending = false;
+#ifdef ESP8266
+    interrupts();
+#else
+    taskEXIT_CRITICAL(&m_interruptsMux);
+#endif
+    return pending;
+}
+#endif // USE_GDOLIB
 
+/****************************** COMMON SETTING *********************************/
 #define MAX_COMMS_RETRY 10
 
 /******************************* SECURITY 2.0 *********************************/
@@ -166,10 +190,6 @@ static bool rolling_code_operation_in_progress = false;
 #ifndef USE_GDOLIB
 static const uint8_t RX_LENGTH = 2;
 typedef uint8_t RxPacket[RX_LENGTH * 4];
-// RX ISR control
-#ifdef ESP32
-static portMUX_TYPE m_interruptsMux = portMUX_INITIALIZER_UNLOCKED;
-#endif
 // time stamping
 _millis_t last_tx;
 _millis_t msg_start;
@@ -368,30 +388,6 @@ static void gdo_event_handler(const gdo_status_t *status, gdo_cb_event_t event, 
 }
 #endif
 
-#ifndef USE_GDOLIB
-/****************************************************************************
- * checks if there is any RX data in process of being received
- */
-__attribute__((always_inline)) inline bool isRxPending()
-{
-    bool pending;
-#ifdef ESP8266
-    noInterrupts();
-#else
-    taskENTER_CRITICAL(&m_interruptsMux);
-#endif
-    // rxPending is set in ISR
-    if ((pending = rxPending))
-        rxPending = false;
-#ifdef ESP8266
-    interrupts();
-#else
-    taskEXIT_CRITICAL(&m_interruptsMux);
-#endif
-    return pending;
-}
-#endif // USE_GDOLIB
-
 /****************************************************************************
  * Initialize communications with garage door.
  */
@@ -415,6 +411,9 @@ void setup_comms()
     q_init(&pkt_q, sizeof(PacketAction), COMMAND_QUEUE_SIZE, FIFO, false);
 #endif
 
+    // set to output (not currently used (prob not ported over) using now for new disconnect of wall panel)
+    pinMode(STATUS_DOOR_PIN, OUTPUT);
+
     if (doorControlType == 1)
     {
         ESP_LOGI(TAG, "=== Setting up comms for SECURITY+1.0 protocol");
@@ -423,7 +422,6 @@ void setup_comms()
         // GPIO16 - D0
         // enable wall panel
         wallPanelConnected = true;
-        pinMode(STATUS_DOOR_PIN, OUTPUT);
         digitalWrite(STATUS_DOOR_PIN, wallPanelConnected);
 #endif
 
@@ -602,7 +600,6 @@ void setup_comms()
         // pin-based obstruction detection attempted only if user not requested to get from status
         ESP_LOGI(TAG, "Initialize for pin-based obstruction detection");
         pinMode(INPUT_OBST_PIN, INPUT);
-        pinMode(STATUS_OBST_PIN, OUTPUT);
         // FALLING from https://github.com/ratgdo/esphome-ratgdo/blob/e248c705c5342e99201de272cb3e6dc0607a0f84/components/ratgdo/ratgdo.cpp#L54C14-L54C14
         attachInterrupt(INPUT_OBST_PIN, isr_obstruction, FALLING);
     }
@@ -610,6 +607,8 @@ void setup_comms()
     {
         ESP_LOGI(TAG, "Use status messages for obstruction detection");
     }
+    // set the status pin for output
+    pinMode(STATUS_OBST_PIN, OUTPUT);
 #endif
     comms_setup_done = true;
     comms_status_start = _millis();
