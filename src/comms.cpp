@@ -210,8 +210,10 @@ uint8_t lockState;
 // keep this here incase at somepoint its needed
 // it is used for emulation of wall panel
 // byte secplus1States[] = {0x35, 0x35, 0x35, 0x35, 0x33, 0x33, 0x53, 0x53, 0x38, 0x3A, 0x3A, 0x3A, 0x39, 0x38, 0x3A, 0x38, 0x3A, 0x39};
-// this is what MY 889LM exhibited when powered up (release of all buttons, and then polls)
-byte secplus1States[] = {0x35, 0x35, 0x33, 0x33, 0x38, 0x3A, 0x39};
+// MJS: this is what MY 889LM exhibited when powered up (release of all buttons, and then polls)
+// MJS: the 0x53, GDO responds with 0x01 (since we dont use it, seems OK to not sent to GDO)
+byte secplus1States[] = { 0x35, 0x35, 0x33, 0x33, /*0x53, 0x53,*/ 0x38, 0x3A, 0x39, 0x3A };
+#define SECPLUS1_POLL_ITEMS 4   // items at end of secplus1States[]
 
 // values for SECURITY+1.0 communication
 enum secplus1Codes : uint8_t
@@ -223,15 +225,21 @@ enum secplus1Codes : uint8_t
     LockButtonPress = 0x34,
     LockButtonRelease = 0x35,
 
-    Unkown_0x36 = 0x36,
+    Unknown_0x36 = 0x36,
     Unknown_0x37 = 0x37,
 
     DoorStatus = 0x38,
-    ObstructionStatus = 0x39, // this is not proven
+    ObstructionStatus = 0x39,
     LightLockStatus = 0x3A,
-    Unknown = 0xFF
+
+    Unknown_0x53    = 0x53,     // sent by WP when done its "power up"
+    
+    Unknown = 0xFF              // (when rx fails parity test)
 };
 
+secplus1Codes secplus1LastSent;
+
+// protoypes
 void sync();
 bool process_PacketAction(PacketAction &pkt_ac);
 void door_command(DoorAction action);
@@ -242,6 +250,7 @@ bool transmitSec2(PacketAction &pkt_ac);
 void obstruction_timer();
 void sec1_light_press();
 void sec1_light_release(uint8_t howManyReleases = 2);
+void sec1_poll_status(uint8_t sec1PollCmd);
 #endif // not USE_GDOLIB
 
 void manual_recovery();
@@ -664,6 +673,24 @@ void reset_door()
 /****************************************************************************
  * Sec+ 1.0 loop functions.
  */
+void sec1_poll_status(uint8_t sec1PollCmd)
+{
+    // send through queue
+    PacketData data;
+    data.type = PacketDataType::Status;
+    data.value.cmd = sec1PollCmd;
+    Packet pkt = Packet(PacketCommand::Status, data, id_code);
+    PacketAction pkt_ac = {pkt, true};
+#ifdef ESP32
+    if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
+#else
+    if (!q_push(&pkt_q, &pkt_ac))
+#endif
+    {
+        ESP_LOGE(TAG, "packet queue full, dropping panel emulation status pkt");
+    }
+}
+
 void wallPlate_Emulation()
 {
     if (wallPanelDetected)
@@ -709,25 +736,13 @@ void wallPlate_Emulation()
 
             byte secplus1ToSend = byte(secplus1States[stateIndex]);
 
-            // send through queue
-            PacketData data;
-            data.type = PacketDataType::Status;
-            data.value.cmd = secplus1ToSend;
-            Packet pkt = Packet(PacketCommand::GetStatus, data, id_code);
-            PacketAction pkt_ac = {pkt, true};
-#ifdef ESP32
-            if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
-#else
-            if (!q_push(&pkt_q, &pkt_ac))
-#endif
-            {
-                ESP_LOGE(TAG, "packet queue full, dropping panel emulation status pkt");
-            }
+            sec1_poll_status(secplus1ToSend);
 
+            // set next poll
             stateIndex++;
             if (stateIndex == sizeof(secplus1States))
             {
-                stateIndex = sizeof(secplus1States) - 3;
+                stateIndex = sizeof(secplus1States) - SECPLUS1_POLL_ITEMS;
             }
         }
     }
@@ -1920,6 +1935,8 @@ bool process_PacketAction(PacketAction &pkt_ac)
                 success = transmitSec1(secplus1Codes::LightButtonPress);
                 if (success)
                 {
+                    secplus1LastSent = secplus1Codes::LightButtonPress;
+
                     // ESP_LOGI(TAG, "SEC1 TX sent LIGHT button press");
                 }
                 else
@@ -1934,6 +1951,8 @@ bool process_PacketAction(PacketAction &pkt_ac)
                 success = transmitSec1(secplus1Codes::LightButtonRelease);
                 if (success)
                 {
+                    secplus1LastSent = secplus1Codes::LightButtonRelease;
+
                     // ESP_LOGI(TAG, "SEC1 TX sent LIGHT button release");
                 }
                 else
@@ -2442,6 +2461,12 @@ void sec1_light_press()
 #endif
     {
         ESP_LOGE(TAG, "packet queue full, dropping light press pkt");
+    }
+
+    // this better emulates wall panel
+    if (garage_door.wallPanelEmulated)
+    {
+        sec1_poll_status(secplus1Codes::LightLockStatus);
     }
 }
 
