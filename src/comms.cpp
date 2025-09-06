@@ -142,14 +142,38 @@ void IRAM_ATTR isr_obstruction()
     obstruction_sensor.low_count++;
 }
 
+#ifndef USE_GDOLIB
 // Becomes set from ISR / IRQ callback function.
 static bool rxPending;
-
 void IRAM_ATTR receiveHandler()
 {
     rxPending = true;
 }
+/****************************************************************************
+ * checks if there is any RX data in process of being received
+ */
+__attribute__((always_inline)) inline bool isRxPending()
+{
+    bool pending;
+#ifdef ESP8266
+    noInterrupts();
+#else
+    static portMUX_TYPE m_interruptsMux = portMUX_INITIALIZER_UNLOCKED;
+    taskENTER_CRITICAL(&m_interruptsMux);
+#endif
+    // rxPending is set in ISR
+    if ((pending = rxPending))
+        rxPending = false;
+#ifdef ESP8266
+    interrupts();
+#else
+    taskEXIT_CRITICAL(&m_interruptsMux);
+#endif
+    return pending;
+}
+#endif // USE_GDOLIB
 
+/****************************** COMMON SETTING *********************************/
 #define MAX_COMMS_RETRY 10
 
 /******************************* SECURITY 2.0 *********************************/
@@ -166,10 +190,6 @@ static bool rolling_code_operation_in_progress = false;
 #ifndef USE_GDOLIB
 static const uint8_t RX_LENGTH = 2;
 typedef uint8_t RxPacket[RX_LENGTH * 4];
-// RX ISR control
-#ifdef ESP32
-static portMUX_TYPE m_interruptsMux = portMUX_INITIALIZER_UNLOCKED;
-#endif
 // time stamping
 _millis_t last_tx;
 _millis_t msg_start;
@@ -190,8 +210,10 @@ uint8_t lockState;
 // keep this here incase at somepoint its needed
 // it is used for emulation of wall panel
 // byte secplus1States[] = {0x35, 0x35, 0x35, 0x35, 0x33, 0x33, 0x53, 0x53, 0x38, 0x3A, 0x3A, 0x3A, 0x39, 0x38, 0x3A, 0x38, 0x3A, 0x39};
-// this is what MY 889LM exhibited when powered up (release of all buttons, and then polls)
-byte secplus1States[] = {0x35, 0x35, 0x33, 0x33, 0x38, 0x3A, 0x39};
+// MJS: this is what MY 889LM exhibited when powered up (release of all buttons, and then polls)
+// MJS: the 0x53, GDO responds with 0x01 (since we dont use it, seems OK to not sent to GDO)
+byte secplus1States[] = { 0x35, 0x35, 0x33, 0x33, /*0x53, 0x53,*/ 0x38, 0x3A, 0x39, 0x3A };
+#define SECPLUS1_POLL_ITEMS 4   // items at end of secplus1States[]
 
 // values for SECURITY+1.0 communication
 enum secplus1Codes : uint8_t
@@ -203,15 +225,19 @@ enum secplus1Codes : uint8_t
     LockButtonPress = 0x34,
     LockButtonRelease = 0x35,
 
-    Unkown_0x36 = 0x36,
+    Unknown_0x36 = 0x36,
     Unknown_0x37 = 0x37,
 
     DoorStatus = 0x38,
-    ObstructionStatus = 0x39, // this is not proven
+    ObstructionStatus = 0x39,
     LightLockStatus = 0x3A,
-    Unknown = 0xFF
+
+    Unknown_0x53    = 0x53,     // sent by WP when done its "power up"
+    
+    Unknown = 0xFF              // (when rx fails parity test)
 };
 
+// protoypes
 void sync();
 bool process_PacketAction(PacketAction &pkt_ac);
 void door_command(DoorAction action);
@@ -222,6 +248,7 @@ bool transmitSec2(PacketAction &pkt_ac);
 void obstruction_timer();
 void sec1_light_press();
 void sec1_light_release(uint8_t howManyReleases = 2);
+void sec1_poll_status(uint8_t sec1PollCmd);
 #endif // not USE_GDOLIB
 
 void manual_recovery();
@@ -368,30 +395,6 @@ static void gdo_event_handler(const gdo_status_t *status, gdo_cb_event_t event, 
 }
 #endif
 
-#ifndef USE_GDOLIB
-/****************************************************************************
- * checks if there is any RX data in process of being received
- */
-__attribute__((always_inline)) inline bool isRxPending()
-{
-    bool pending;
-#ifdef ESP8266
-    noInterrupts();
-#else
-    taskENTER_CRITICAL(&m_interruptsMux);
-#endif
-    // rxPending is set in ISR
-    if ((pending = rxPending))
-        rxPending = false;
-#ifdef ESP8266
-    interrupts();
-#else
-    taskEXIT_CRITICAL(&m_interruptsMux);
-#endif
-    return pending;
-}
-#endif // USE_GDOLIB
-
 /****************************************************************************
  * Initialize communications with garage door.
  */
@@ -415,6 +418,9 @@ void setup_comms()
     q_init(&pkt_q, sizeof(PacketAction), COMMAND_QUEUE_SIZE, FIFO, false);
 #endif
 
+    // set to output (not currently used (prob not ported over) using now for new disconnect of wall panel)
+    pinMode(STATUS_DOOR_PIN, OUTPUT);
+
     if (doorControlType == 1)
     {
         ESP_LOGI(TAG, "=== Setting up comms for SECURITY+1.0 protocol");
@@ -423,7 +429,6 @@ void setup_comms()
         // GPIO16 - D0
         // enable wall panel
         wallPanelConnected = true;
-        pinMode(STATUS_DOOR_PIN, OUTPUT);
         digitalWrite(STATUS_DOOR_PIN, wallPanelConnected);
 #endif
 
@@ -602,7 +607,6 @@ void setup_comms()
         // pin-based obstruction detection attempted only if user not requested to get from status
         ESP_LOGI(TAG, "Initialize for pin-based obstruction detection");
         pinMode(INPUT_OBST_PIN, INPUT);
-        pinMode(STATUS_OBST_PIN, OUTPUT);
         // FALLING from https://github.com/ratgdo/esphome-ratgdo/blob/e248c705c5342e99201de272cb3e6dc0607a0f84/components/ratgdo/ratgdo.cpp#L54C14-L54C14
         attachInterrupt(INPUT_OBST_PIN, isr_obstruction, FALLING);
     }
@@ -610,6 +614,8 @@ void setup_comms()
     {
         ESP_LOGI(TAG, "Use status messages for obstruction detection");
     }
+    // set the status pin for output
+    pinMode(STATUS_OBST_PIN, OUTPUT);
 #endif
     comms_setup_done = true;
     comms_status_start = _millis();
@@ -665,6 +671,24 @@ void reset_door()
 /****************************************************************************
  * Sec+ 1.0 loop functions.
  */
+void sec1_poll_status(uint8_t sec1PollCmd)
+{
+    // send through queue
+    PacketData data;
+    data.type = PacketDataType::Status;
+    data.value.cmd = sec1PollCmd;
+    Packet pkt = Packet(PacketCommand::Status, data, id_code);
+    PacketAction pkt_ac = {pkt, true};
+#ifdef ESP32
+    if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
+#else
+    if (!q_push(&pkt_q, &pkt_ac))
+#endif
+    {
+        ESP_LOGE(TAG, "packet queue full, dropping panel emulation status pkt");
+    }
+}
+
 void wallPlate_Emulation()
 {
     if (wallPanelDetected)
@@ -710,25 +734,13 @@ void wallPlate_Emulation()
 
             byte secplus1ToSend = byte(secplus1States[stateIndex]);
 
-            // send through queue
-            PacketData data;
-            data.type = PacketDataType::Status;
-            data.value.cmd = secplus1ToSend;
-            Packet pkt = Packet(PacketCommand::GetStatus, data, id_code);
-            PacketAction pkt_ac = {pkt, true};
-#ifdef ESP32
-            if (xQueueSendToBack(pkt_q, &pkt_ac, 0) == errQUEUE_FULL)
-#else
-            if (!q_push(&pkt_q, &pkt_ac))
-#endif
-            {
-                ESP_LOGE(TAG, "packet queue full, dropping panel emulation status pkt");
-            }
+            sec1_poll_status(secplus1ToSend);
 
+            // set next poll
             stateIndex++;
             if (stateIndex == sizeof(secplus1States))
             {
-                stateIndex = sizeof(secplus1States) - 3;
+                stateIndex = sizeof(secplus1States) - SECPLUS1_POLL_ITEMS;
             }
         }
     }
@@ -2443,6 +2455,12 @@ void sec1_light_press()
 #endif
     {
         ESP_LOGE(TAG, "packet queue full, dropping light press pkt");
+    }
+
+    // this better emulates wall panel
+    if (garage_door.wallPanelEmulated)
+    {
+        sec1_poll_status(secplus1Codes::LightLockStatus);
     }
 }
 
