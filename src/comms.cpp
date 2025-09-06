@@ -1114,8 +1114,6 @@ void sec1_process_message(uint8_t key, uint8_t value)
     }
 }
 
-_millis_t wpDiscTime;
-
 void comms_loop_sec1()
 {
     static bool reading_msg = false;
@@ -1766,8 +1764,6 @@ bool transmitSec1(byte toSend)
         // will reconnect in after tx complete + aprox 10ms - 13ms in comms_loop_sec1()
         wallPanelConnected = false;
         digitalWrite(STATUS_DOOR_PIN, wallPanelConnected);
-        // time stamp disconnect
-        wpDiscTime = _millis();
 #endif
     }
 
@@ -1808,8 +1804,6 @@ bool transmitSec1(byte toSend)
                 sw_serial.flush();
             wallPanelConnected = true;
             digitalWrite(STATUS_DOOR_PIN, wallPanelConnected);
-
-            // ESP_LOGD(TAG, "WP connected now, been disconnected for %lums", _millis() - wpDiscTime);
         }
 #endif
     }
