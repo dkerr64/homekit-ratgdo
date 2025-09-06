@@ -876,7 +876,7 @@ void sec1_process_message(uint8_t key, uint8_t value)
     // door button press
     case secplus1Codes::DoorButtonPress:
     {
-        ESP_LOGI(TAG, "SEC1 RX 0x30 (door press)");
+        ESP_LOGD(TAG, "SEC1 RX 0x30 (door press)");
 
         manual_recovery();
 
@@ -894,7 +894,7 @@ void sec1_process_message(uint8_t key, uint8_t value)
         // wall panel is sending out 0x31 (Door Button Release) when it starts up
         // but also on release of door button
 
-        ESP_LOGI(TAG, "SEC1 RX 0x31 (door release)");
+        ESP_LOGD(TAG, "SEC1 RX 0x31 (door release)");
 
         // Possible power up of 889LM
         if (doorState == GarageDoorCurrentState::UNKNOWN)
@@ -908,7 +908,7 @@ void sec1_process_message(uint8_t key, uint8_t value)
     // light button press
     case secplus1Codes::LightButtonPress:
     {
-        ESP_LOGI(TAG, "SEC1 RX 0x32 (light press)");
+        ESP_LOGD(TAG, "SEC1 RX 0x32 (light press)");
 
         manual_recovery();
 
@@ -918,7 +918,7 @@ void sec1_process_message(uint8_t key, uint8_t value)
     // light button release
     case secplus1Codes::LightButtonRelease:
     {
-        ESP_LOGI(TAG, "SEC1 RX 0x33 (light release)");
+        ESP_LOGD(TAG, "SEC1 RX 0x33 (light release)");
 
         break;
     }
@@ -928,13 +928,7 @@ void sec1_process_message(uint8_t key, uint8_t value)
     {
         // 0x5X = stopped
         // 0x0X = moving
-        // best attempt to trap invalid values (due to collisions)
-        if (((value & 0xF0) != 0x00) && ((value & 0xF0) != 0x50) && ((value & 0xF0) != 0xB0))
-        {
-            ESP_LOGI(TAG, "SEC1 RX DoorStatus(0x38) \"value\" upper nibble not 0x0 or 0x5 or 0xB, received: 0x%02X", value);
-            break;
-        }
-
+        // upper nibble should be 0x5 or 0x0 (DK reported 0x1)
         // sec+1 doors sometimes report wrong door status
         // back to origional code, MJS 8/14/2025 confirmed logging
         // it could report a valid byte but its not really valid
@@ -1048,15 +1042,9 @@ void sec1_process_message(uint8_t key, uint8_t value)
     case secplus1Codes::LightLockStatus:
     {
         // only use for real sec1 commm debugging, its just too chatty
-        // ESP_LOGI(TAG, "SEC1 RX 0x3A value: 0x%02X", value);
+        // ESP_LOGD(TAG, "SEC1 RX 0x3A value: 0x%02X", value);
 
-        // upper nibble must be 0x5 or 0x1
-        if (((value & 0xF0) != 0x50) && ((value & 0xF0) != 0x10))
-        {
-            ESP_LOGI(TAG, "SEC1 RX LightLockStatus(0x3A) \"value\" upper nibble not 0x5 or 0x1, received: 0x%02X", value);
-            break;
-        }
-
+        // upper nibble should be 0x5 or 0x1
         // make sure 2 same in a row
         // MJS 8/14/2025 during logging observed this situation
         static uint8_t prevLightLock = 0xFF; // Initialize to invalid value
@@ -1118,6 +1106,7 @@ void comms_loop_sec1()
 {
     static bool reading_msg = false;
     static RxPacket rx_packet;
+    static uint8_t syncByteCount;
 
     // CTS timer
     // when wall panel present, need 5ms elasped after last complete message arrives.
@@ -1139,6 +1128,25 @@ void comms_loop_sec1()
 
         clearToSend = false;
 
+        // this byte is received with invalid parity
+        // it is sent when there is no buss traffic (need to look at it with scope)
+        if (ser_byte == 0xFF)
+        {
+            syncByteCount++;
+            if (syncByteCount == 10)
+            {
+                syncByteCount = 0;
+                // alternate way to detect no wall panel
+                // not in use as of now
+                // but could start emulator here
+            }
+
+            // reset start of message (just incase somehow is 2nd byte)
+            reading_msg = false;
+
+            break;
+        }
+
         // parity check on byte
         if (sw_serial.readParity() != sw_serial.parityEven(ser_byte))
         {
@@ -1153,7 +1161,7 @@ void comms_loop_sec1()
             continue;
         }
 
-        // upper nibble alwasy 0x3 for press/release/poll bytes (0x30 - 0x3A)
+        // upper nibble always 0x3 for press/release/poll bytes (0x30 - 0x3A)
         // no GDO response has upper nibble 0x3, and its validated in sec1_process_message()
         // if a byte comes in as 0x3x even if reading 2 byte message, start over
 
@@ -1202,22 +1210,6 @@ void comms_loop_sec1()
             ESP_LOGD(TAG, "SEC1 RX invalid cmd byte 0x%02X", ser_byte);
         }
     }
-
-    /*
-    // incomplete message timeout?
-    if (reading_msg == true && ((_millis() - msg_start) > SECPLUS1_RX_MESSAGE_TIMEOUT))
-    {
-        ESP_LOGD(TAG, "SEC1 RX message timeout, 1 byte of 2 byte message received [rx_packet[0]=0x%02X]", rx_packet[0]);
-
-        // if we have a partial packet and it's been over 15ms since last byte was read,
-        // the rest is not coming (a full packet should be received in ~10ms),
-        // discard it so we can read the following packet correctly
-        // so how did we lose it
-        //
-        // ⁡⁢⁣⁡⁢⁣⁢MJS-8/12/2025 - measued time 9-10ms for 2byte messages⁡
-        reading_msg = false;
-    }
-    */
 
     // if still reading the message in, no need to process further
     // as its not a good time to TX, and next byte is expected within 10ms
