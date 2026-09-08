@@ -5,12 +5,13 @@ All notable changes to `homekit-ratgdo` will be documented in this file. This pr
 > [!IMPORTANT]
 > HomeKit firmware for ESP8266-based RATGDO v2.5-series devices has been in maintenance mode since version 2.2.0: updates continue on a best-effort basis, but feature parity with ESP32 is no longer guaranteed. See [README.md](https://github.com/ratgdo/homekit-ratgdo/blob/main/README.md)
 
-## v2.2.4 (2026-09-??)
+## v2.2.4 (2026-09-08)
 
 ### What's Changed
 
 * Bugfix: Obstruction status GPIO pin was inverted (did not match documentation), see https://github.com/ratgdo/homekit-ratgdo32/issues/199
 * Bugfix: Add support to report door status through GPIO pin, see https://github.com/ratgdo/homekit-ratgdo32/issues/199
+* Other: When compiling, create new CRC for HTML files if any file in WWW directory has new commit date. see https://github.com/ratgdo/homekit-ratgdo32/issues/200
 
 ### Known Issues
 
